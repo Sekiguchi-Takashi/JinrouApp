@@ -36,7 +36,7 @@ enum class Role(val jp: String, val desc: String, val isWolf: Boolean) {
 enum class Animal(val jp: String) {
     RABBIT("うさぎ"), FOX("きつね"), CAT("ねこ"), DOG("いぬ"),
     BEAR("くま"), OWL("ふくろう"), SQUIRREL("りす"),
-    PANDA("ぱんだ"), PENGUIN("ぺんぎん")
+    KOALA("こあら"), PENGUIN("ぺんぎん")
 }
 
 class Player(val id: Int, val pname: String, val animal: Animal) {
@@ -54,7 +54,7 @@ class Talk(val speakerId: Int, val text: String, val targetId: Int, val suspect:
 class GameEngine {
 
     companion object {
-        val NAMES = listOf("ミミ", "コン", "タマ", "ポチ", "クマ吉", "ホウ", "リスケ", "パオ", "ペン太")
+        val NAMES = listOf("ミミ", "コン", "タマ", "ポチ", "クマ吉", "ホウ", "リスケ", "コアタ", "ペン太")
         const val N = 9
     }
 
@@ -82,6 +82,17 @@ class GameEngine {
 
     // CPU占い師の記録
     val cpuSeerResults = LinkedHashMap<Int, Boolean>()
+
+    // 自由会話・説得・名探偵システム
+    var humanTrust = true                 // あなたの発言の信用度（予想が外れると失う）
+    var persuadedToday = false            // 1日1回だけ説得できる
+    val persuaded = HashMap<Int, Int>()   // listenerId -> 採用した疑い先
+    val humanClaims = HashSet<Int>()      // あなたが「人狼だ」と主張した相手
+    var wolfGrudge = false                // 人狼に相方をチクってしまった→狙われる
+    val voteStreak = HashMap<Int, Int>()  // 投票で人狼を当てた連続回数
+    var detectiveId = -1                  // 名探偵の称号を持つキャラ
+    var detectivePick = -1                // 今日の名探偵の予想
+    var newDetectiveJustNow = false       // 今回の開票で名探偵が誕生した
 
     val morningLog = ArrayList<String>()
     var lastVictim: Player? = null
@@ -119,6 +130,11 @@ class GameEngine {
     private fun cpuWolfTarget(): Player? {
         val cands = alive().filter { !it.role.isWolf }
         if (cands.isEmpty()) return null
+        // 相方をチクられた恨み → あなたを狙う
+        if (wolfGrudge) {
+            val h = players[humanId]
+            if (h.alive && !h.role.isWolf && Random.nextInt(100) < 80) return h
+        }
         val realSeer = players.firstOrNull { it.role == Role.SEER }
         if (realSeer != null && realSeer.alive &&
             seerClaimants.contains(realSeer.id) && Random.nextInt(100) < 70) {
@@ -147,6 +163,8 @@ class GameEngine {
     fun resolveNight(humanWolfTarget: Player?, humanSeerTarget: Player?, humanGuardTarget: Player?) {
         dayCount++
         morningLog.clear()
+        persuaded.clear()
+        persuadedToday = false
 
         val seer = players.firstOrNull { it.role == Role.SEER && it.alive }
         val hunter = players.firstOrNull { it.role == Role.HUNTER && it.alive }
@@ -200,6 +218,11 @@ class GameEngine {
                 humanMediumNew = "霊能結果：昨日処刑された ${exd.pname} は $resText"
             } else {
                 morningLog.add("${medium.pname}「霊能結果：昨日処刑された ${exd.pname} は $resText」")
+                // あなたが人狼だと主張した相手が、公開の場でシロと判明 → 信用を失う
+                if (!res && humanTrust && humanClaims.contains(exd.id)) {
+                    humanTrust = false
+                    morningLog.add("${players[humanId].pname} の予想（${exd.pname} が人狼）は外れだった…みんなの信用を失ってしまった。")
+                }
             }
         }
         lastExecuted = null
@@ -245,7 +268,7 @@ class GameEngine {
                     publicBlack.add(t.id); suspicionBoost.add(t.id)
                     Talk(realSeer.id, "占い結果！ ${t.pname} は 人狼 だ！", t.id, true)
                 } else {
-                    publicWhite.add(t.id)
+                    publicWhite.add(t.id); if (humanClaims.contains(t.id)) humanTrust = false
                     Talk(realSeer.id, "占い結果。${t.pname} は 人狼ではない よ", t.id, false)
                 }
                 talks.add(realTalk!!)
@@ -262,7 +285,7 @@ class GameEngine {
                         publicBlack.add(id); suspicionBoost.add(id)
                         Talk(humanId, "占い結果！ $nm は 人狼 だ！", id, true)
                     } else {
-                        publicWhite.add(id)
+                        publicWhite.add(id); if (humanClaims.contains(id)) humanTrust = false
                         Talk(humanId, "占い結果。$nm は 人狼ではない", id, false)
                     }
                     talks.add(tk)
@@ -279,7 +302,7 @@ class GameEngine {
                 val rt = realTalk!!
                 talks.add(Talk(fake.id, rt.text, rt.targetId, rt.suspect))
                 if (rt.suspect) { publicBlack.add(rt.targetId); suspicionBoost.add(rt.targetId) }
-                else publicWhite.add(rt.targetId)
+                else publicWhite.add(rt.targetId); if (humanClaims.contains(rt.targetId)) humanTrust = false
             } else {
                 val cands = alive().filter {
                     it.id != fake.id && !it.role.isWolf && !fakeAccused.contains(it.id)
@@ -293,6 +316,80 @@ class GameEngine {
             }
         }
         return talks
+    }
+
+    // ---------- 自由会話・説得 ----------
+
+    // 疑い話し合いの前の自由な発言（無言もある）
+    fun freeTalks(): List<Talk> {
+        val talks = ArrayList<Talk>()
+        val av = alive()
+        for (p in av) {
+            if (p.id == humanId) continue
+            val others = av.filter { it.id != p.id }
+            if (others.isEmpty()) continue
+            val r = Random.nextInt(100)
+            when {
+                r < 18 -> { /* あえて無言 */ }
+                r < 40 -> talks.add(Talk(p.id, "ぼくは人狼じゃないよ！ほんとだよ！", p.id, false))
+                r < 58 -> {
+                    val t = others.random()
+                    talks.add(Talk(p.id, "${t.pname} は信用できると思うんだ。", t.id, false))
+                }
+                r < 76 -> {
+                    val t = others.random()
+                    talks.add(Talk(p.id, "${t.pname} が占い師なんじゃないかな？", t.id, false))
+                }
+                else -> {
+                    val t = others.random()
+                    talks.add(Talk(p.id, "狩人は ${t.pname} っぽい気がする。", t.id, false))
+                }
+            }
+        }
+        if (detectiveId >= 0 && players[detectiveId].alive) {
+            talks.add(0, Talk(detectiveId, "ふっふっふ…名探偵のぼくに任せたまえ！", detectiveId, false))
+        }
+        return talks
+    }
+
+    // あなたが listener に「target が人狼だと思う」とこっそり伝える
+    fun persuade(listener: Player, target: Player): Talk {
+        persuadedToday = true
+        val me = players[humanId]
+        // 信用を失っている → 無視される
+        if (!humanTrust) {
+            return Talk(listener.id, "……（${me.pname} の話はもう信用できないなあ）", humanId, false)
+        }
+        // あなたが人狼で名探偵を説得しようとすると、2回に1回バレる
+        if (me.role.isWolf && listener.id == detectiveId && Random.nextInt(2) == 0) {
+            publicBlack.add(humanId)
+            suspicionBoost.add(humanId)
+            humanTrust = false
+            return Talk(listener.id,
+                "……キミ、さっきから様子が変だよ。まさか、キミが人狼なんじゃないのか！？",
+                humanId, true)
+        }
+        humanClaims.add(target.id)
+        // 人狼本人に相方の人狼を伝えてしまった → 恨まれて狙われる
+        if (listener.role.isWolf && target.role.isWolf && target.id != listener.id) {
+            wolfGrudge = true
+            return Talk(listener.id,
+                "へえ…${target.pname} が人狼ねえ。……おもしろいこと言うんだね、キミ。",
+                target.id, false)
+        }
+        return if (Random.nextInt(100) < 70) {
+            persuaded[listener.id] = target.id
+            if (listener.id == detectiveId) {
+                Talk(listener.id, "なるほど…名探偵のカンにビビッときた。${target.pname} が怪しいぞ！",
+                    target.id, true)
+            } else {
+                Talk(listener.id, "なるほど…${target.pname} が怪しいのか。覚えておくよ。",
+                    target.id, true)
+            }
+        } else {
+            Talk(listener.id, "うーん、ぼくは ${target.pname} が人狼だとは思わないなあ。",
+                target.id, false)
+        }
     }
 
     fun discussionTalks(): List<Talk> {
@@ -310,13 +407,51 @@ class GameEngine {
             "%s は人狼じゃないって占われてるよね。",
             "ぼくは %s を信頼してるよ。"
         )
+        // 名探偵の今日の予想（みんなが同調する）
+        detectivePick = -1
+        if (detectiveId >= 0 && players[detectiveId].alive) {
+            val det = players[detectiveId]
+            val dcands = av.filter { it.id != det.id }
+            val pick = persuaded[det.id]?.let { players[it] }?.takeIf { it.alive }
+                ?: dcands.filter { publicBlack.contains(it.id) }.randomOrNull()
+                ?: dcands.filter { suspicionBoost.contains(it.id) }.randomOrNull()
+                ?: dcands.filter { !publicWhite.contains(it.id) }.randomOrNull()
+                ?: dcands.randomOrNull()
+            if (pick != null) {
+                detectivePick = pick.id
+                talks.add(Talk(det.id, "🎩 名探偵のカン！ ${pick.pname} が人狼だ！", pick.id, true))
+            }
+        }
+
         for (p in av) {
             if (p.id == humanId) continue
+            if (p.id == detectiveId) continue            // 名探偵はもう発言した
             if (seerClaimants.contains(p.id)) continue   // 占い師CO中は昼は静かに
             val suspects = av.filter {
                 it.id != p.id && (p.role != Role.WEREWOLF || !it.role.isWolf)
             }
             if (suspects.isEmpty()) continue
+
+            // 自由会話であなたに説得された意見を採用することがある
+            val padopt = persuaded[p.id]?.let { players[it] }
+                ?.takeIf { it.alive && it.id != p.id && (p.role != Role.WEREWOLF || !it.role.isWolf) }
+            if (padopt != null && Random.nextInt(100) < 80) {
+                talks.add(Talk(p.id,
+                    "${players[humanId].pname} の言うとおり、${padopt.pname} が怪しい気がしてきた…",
+                    padopt.id, true))
+                continue
+            }
+
+            // 名探偵の予想に同調する
+            if (detectivePick >= 0 && detectivePick != p.id) {
+                val dt = players[detectivePick]
+                if (dt.alive && (p.role != Role.WEREWOLF || !dt.role.isWolf) &&
+                    Random.nextInt(100) < 75) {
+                    talks.add(Talk(p.id, "名探偵が言うなら、${dt.pname} に投票するよ！", dt.id, true))
+                    continue
+                }
+            }
+
             val black = suspects.filter { publicBlack.contains(it.id) }
             val whites = suspects.filter { publicWhite.contains(it.id) }
             if (black.isNotEmpty() && Random.nextInt(100) < 70) {
@@ -350,16 +485,46 @@ class GameEngine {
             val cands0 = alive().filter { it.id != v.id }
             val candsW = if (v.role.isWolf) cands0.filter { !it.role.isWolf } else cands0
             val cands = if (candsW.isNotEmpty()) candsW else cands0
-            val black = cands.filter { publicBlack.contains(it.id) }
-            val pick = if (black.isNotEmpty()) {
-                black.random()
-            } else {
+            val pick = run {
+                // 名探偵本人は自分の予想に投票
+                if (v.id == detectiveId && detectivePick >= 0) {
+                    val dt = players[detectivePick]
+                    if (dt.alive && cands.contains(dt)) return@run dt
+                }
+                // あなたの説得を採用
+                val pers = persuaded[v.id]?.let { players[it] }?.takeIf { it.alive && cands.contains(it) }
+                if (pers != null && Random.nextInt(100) < 75) return@run pers
+                // 名探偵の予想に同調
+                if (detectivePick >= 0 && v.id != detectiveId) {
+                    val dt = players[detectivePick]
+                    if (dt.alive && cands.contains(dt) && Random.nextInt(100) < 85) return@run dt
+                }
+                val black = cands.filter { publicBlack.contains(it.id) }
+                if (black.isNotEmpty()) return@run black.random()
                 val notWhite = cands.filter { !publicWhite.contains(it.id) && !seerClaimants.contains(it.id) }
                 if (notWhite.isNotEmpty()) notWhite.random() else cands.random()
             }
             votes[v.id] = pick.id
         }
         lastVotes = votes
+
+        // 「予想の段階」で人狼を当てたかを記録（投票結果に負けてもよい）
+        newDetectiveJustNow = false
+        for ((voterId, targetId) in votes) {
+            if (voterId == humanId) continue
+            if (players[voterId].role.isWolf) continue
+            if (players[targetId].role.isWolf) {
+                val st = (voteStreak[voterId] ?: 0) + 1
+                voteStreak[voterId] = st
+                if (st >= 2 && detectiveId < 0) {
+                    detectiveId = voterId
+                    newDetectiveJustNow = true
+                }
+            } else {
+                voteStreak[voterId] = 0
+            }
+        }
+
         val tally = votes.values.groupingBy { it }.eachCount()
         val max = tally.values.maxOrNull() ?: 0
         val top = tally.filter { it.value == max }.keys.toList()
@@ -398,7 +563,7 @@ object CharacterArt {
         Animal.BEAR -> Color.parseColor("#9C6B43")
         Animal.OWL -> Color.parseColor("#B39A7C")
         Animal.SQUIRREL -> Color.parseColor("#DE9057")
-        Animal.PANDA -> Color.parseColor("#F4F1EA")
+        Animal.KOALA -> Color.parseColor("#A8B0BC")
         Animal.PENGUIN -> Color.parseColor("#4A5A70")
     }
 
@@ -410,7 +575,7 @@ object CharacterArt {
         Animal.BEAR -> Color.parseColor("#4A342A")
         Animal.OWL -> Color.parseColor("#E8A020")
         Animal.SQUIRREL -> Color.parseColor("#6B4A2A")
-        Animal.PANDA -> Color.parseColor("#3A3A3A")
+        Animal.KOALA -> Color.parseColor("#4A3A32")
         Animal.PENGUIN -> Color.parseColor("#4A78B0")
     }
 
@@ -470,14 +635,10 @@ object CharacterArt {
             c.drawOval(RectF(cx - hr * 0.72f, hy - hr * 0.45f, cx + hr * 0.72f, hy + hr * 0.85f), p)
         }
 
-        // パンダの目のまわりの黒い模様
-        if (a == Animal.PANDA) {
-            p.color = Color.parseColor("#3A3A3A")
-            for (sgn0 in intArrayOf(-1, 1)) {
-                val px = cx + sgn0 * hr * 0.42f
-                c.drawOval(RectF(px - hr * 0.36f, hy - hr * 0.55f,
-                                 px + hr * 0.36f, hy + hr * 0.35f), p)
-            }
+        // コアラの明るいお腹まわり
+        if (a == Animal.KOALA) {
+            p.color = lighten(col)
+            c.drawOval(RectF(cx - hr * 0.5f, hy + hr * 0.05f, cx + hr * 0.5f, hy + hr * 0.8f), p)
         }
 
         // アニメ風の大きな目
@@ -506,7 +667,17 @@ object CharacterArt {
         }
 
         // 鼻と口
-        if (a == Animal.OWL || a == Animal.PENGUIN) {
+        if (a == Animal.KOALA) {
+            // コアラの大きな鼻
+            p.color = Color.parseColor("#4A4A52")
+            c.drawOval(RectF(cx - hr * 0.2f, hy + hr * 0.02f, cx + hr * 0.2f, hy + hr * 0.52f), p)
+            p.color = Color.argb(90, 255, 255, 255)
+            c.drawOval(RectF(cx - hr * 0.13f, hy + hr * 0.08f, cx - hr * 0.02f, hy + hr * 0.24f), p)
+            stroke.color = Color.parseColor("#4A4A52")
+            stroke.strokeWidth = hr * 0.05f
+            val m0 = RectF(cx - hr * 0.22f, hy + hr * 0.42f, cx + hr * 0.22f, hy + hr * 0.68f)
+            c.drawArc(m0, 20f, 140f, false, stroke)
+        } else if (a == Animal.OWL || a == Animal.PENGUIN) {
             p.color = Color.parseColor("#F5A623")
             val beak = Path()
             beak.moveTo(cx - hr * 0.12f, hy + hr * 0.15f)
@@ -618,10 +789,12 @@ object CharacterArt {
                     c.drawCircle(cx + sgn * hr * 0.6f, hy - hr * 0.85f, hr * 0.13f, p)
                 }
             }
-            Animal.PANDA -> {
-                p.color = Color.parseColor("#3A3A3A")
+            Animal.KOALA -> {
                 for (sgn in intArrayOf(-1, 1)) {
-                    c.drawCircle(cx + sgn * hr * 0.68f, hy - hr * 0.78f, hr * 0.32f, p)
+                    p.color = col
+                    c.drawCircle(cx + sgn * hr * 0.82f, hy - hr * 0.55f, hr * 0.44f, p)
+                    p.color = Color.parseColor("#E8B0C4")
+                    c.drawCircle(cx + sgn * hr * 0.82f, hy - hr * 0.55f, hr * 0.24f, p)
                 }
             }
             Animal.PENGUIN -> {
@@ -936,6 +1109,11 @@ class MainActivity : Activity() {
             you.gravity = Gravity.CENTER
             cell.addView(you)
         }
+        if (pl.id == engine.detectiveId) {
+            val det = tv("🎩名探偵", 10f, true, Color.parseColor("#A8D8FF"))
+            det.gravity = Gravity.CENTER
+            cell.addView(det)
+        }
         if (onClick != null && pl.alive) cell.setOnClickListener { onClick(pl) }
         return cell
     }
@@ -1070,6 +1248,7 @@ class MainActivity : Activity() {
                 e.ensureSeerPhase(false)
                 e.seerPhaseTalks()
                 if (e.winner() != 0) break
+                e.discussionTalks()
                 e.runVote(null)
                 atNight = true
             }
@@ -1189,9 +1368,92 @@ class MainActivity : Activity() {
         setScreen(pn)
     }
 
+    // ---------- 自由会話（疑い話し合いの前） ----------
+
+    private var freeTalksToday = ArrayList<Talk>()
+
+    private fun startFreeTalk() {
+        freeTalksToday = ArrayList(engine.freeTalks())
+        showFreeTalk()
+    }
+
+    private fun showFreeTalk() {
+        val e = engine
+        val h = e.human()
+        val canPersuade = h.alive && !e.persuadedToday
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("☕ ${e.dayCount}日目 - 自由会話", 19f, true, Color.parseColor("#A8E6A1")))
+        cd.addView(space(dp(4)))
+        if (canPersuade) {
+            cd.addView(tv("💡 キャラや吹き出しをタップすると、その相手に「人狼だと思うキャラ」をこっそり伝えられます（1日1回）。\n" +
+                "うまくいけば投票で味方に。ただし相手が人狼だったら…？", 12f, false,
+                Color.parseColor("#BFD0FF")))
+        } else if (h.alive) {
+            cd.addView(tv("（今日はもう説得しました）", 12f, false, Color.parseColor("#BFD0FF")))
+        }
+        cd.addView(space(dp(8)))
+
+        if (freeTalksToday.isEmpty()) {
+            cd.addView(tv("……今日はみんな静かだ。", 14f))
+        }
+        for (t in freeTalksToday) {
+            val sp2 = e.players[t.speakerId]
+            val tap: (() -> Unit)? =
+                if (canPersuade && sp2.alive && sp2.id != e.humanId) {
+                    { showPersuadeTarget(sp2) }
+                } else null
+            cd.addView(talkBubble(t, tap))
+            cd.addView(space(dp(8)))
+        }
+
+        // 発言していない生存キャラもタップで説得できるように下に並べる
+        if (canPersuade) {
+            val spoke = freeTalksToday.map { it.speakerId }.toSet()
+            val silent = e.alive().filter { it.id != e.humanId && !spoke.contains(it.id) }
+            if (silent.isNotEmpty()) {
+                cd.addView(tv("【無言のキャラ（タップで話しかける）】", 12f, true,
+                    Color.parseColor("#BFD0FF")))
+                cd.addView(charGrid(silent, 56, 4) { t -> showPersuadeTarget(t) })
+            }
+        }
+
+        cd.addView(space(dp(14)))
+        cd.addView(btn("疑いの話し合いへ", Color.parseColor("#D8703D")) {
+            currentTalks.addAll(freeTalksToday)
+            currentTalks.addAll(engine.discussionTalks())
+            showDay()
+        })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    private fun showPersuadeTarget(listener: Player) {
+        val e = engine
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🤫 ${listener.pname} にこっそり伝える", 18f, true, Color.parseColor("#FFE28A")))
+        cd.addView(centerChar(listener, 80))
+        cd.addView(space(dp(6)))
+        cd.addView(tv("「人狼だと思うキャラ」を選んでください", 14f))
+        cd.addView(space(dp(8)))
+        val cands = e.alive().filter { it.id != e.humanId && it.id != listener.id }
+        cd.addView(charGridFixed(cands.map { it.id }.toSet(), 64) { target ->
+            val reaction = e.persuade(listener, target)
+            freeTalksToday.add(Talk(e.humanId,
+                "（${listener.pname} に「${target.pname} が人狼だと思う」と伝えた）", target.id, false))
+            freeTalksToday.add(reaction)
+            showFreeTalk()
+        })
+        cd.addView(space(dp(10)))
+        cd.addView(btn("やめておく") { showFreeTalk() })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
     // ---------- 昼の会話：吹き出し ----------
 
-    private fun talkBubble(t: Talk): LinearLayout {
+    private fun talkBubble(t: Talk, onTap: (() -> Unit)? = null): LinearLayout {
         val sp = engine.players[t.speakerId]
         val isYou = t.speakerId == engine.humanId
 
@@ -1227,6 +1489,11 @@ class MainActivity : Activity() {
         val lp = LinearLayout.LayoutParams(0, -2, 1f)
         lp.setMargins(dp(8), 0, 0, 0)
         row.addView(bubble, lp)
+        if (onTap != null) {
+            row.setOnClickListener { onTap() }
+            bubble.setOnClickListener { onTap() }
+            left.setOnClickListener { onTap() }
+        }
         return row
     }
 
@@ -1364,6 +1631,21 @@ class MainActivity : Activity() {
             "・占い師が2人いるとき、狩人はどちらかを必ず護衛します。", 14f))
         cd.addView(space(dp(8)))
         cd.addView(tv(
+            "☕ 自由会話（話し合いの前）\n" +
+            "・みんなが自由に発言します（無言のキャラも）。\n" +
+            "・キャラをタップすると「人狼だと思う相手」をこっそり伝えられます（1日1回）。\n" +
+            "・成功するとそのキャラが投票で同調してくれることも。\n" +
+            "・ただし相手が人狼で、相方の人狼を伝えてしまうと…夜に狙われます！\n" +
+            "・予想が公開の場で外れると信用を失い、説得しても無視されます。", 14f))
+        cd.addView(space(dp(8)))
+        cd.addView(tv(
+            "🎩 名探偵\n" +
+            "・投票で2回連続人狼を当てたキャラは「名探偵」に！（開票に負けてもOK）\n" +
+            "・それ以降、みんなが名探偵の予想に同調して投票します。\n" +
+            "・名探偵だけを説得できれば、村全体の票を動かせます。\n" +
+            "・ただし人狼が名探偵を説得しようとすると、2回に1回バレます！", 14f))
+        cd.addView(space(dp(8)))
+        cd.addView(tv(
             "💬 昼\n" +
             "・生き残った全員で話し合います。\n" +
             "・占い師フェーズで怪しいと言われた人は疑われやすくなります。\n" +
@@ -1417,8 +1699,8 @@ class MainActivity : Activity() {
         }
         cd.addView(space(dp(16)))
         cd.addView(btn("1日目の昼へ", Color.parseColor("#D8703D")) {
-            currentTalks = ArrayList(engine.discussionTalks())
-            showDay()
+            currentTalks = ArrayList()
+            startFreeTalk()
         })
         pn.addView(cd)
         setScreen(pn)
@@ -1671,10 +1953,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(14)))
-        cd.addView(btn("昼の話し合いへ") {
-            currentTalks.addAll(e.discussionTalks())
-            showDay()
-        })
+        cd.addView(btn("自由会話へ") { startFreeTalk() })
         pn.addView(cd)
         setScreen(pn)
     }
@@ -1770,6 +2049,11 @@ class MainActivity : Activity() {
         val et = tv("$exn が処刑された…", 16f, true, Color.parseColor("#FF9B9B"))
         et.gravity = Gravity.CENTER
         cd.addView(et)
+        if (e.newDetectiveJustNow && e.detectiveId >= 0) {
+            cd.addView(space(dp(8)))
+            cd.addView(tv("🎩 ${e.players[e.detectiveId].pname} は2回連続で人狼を見抜いた！\n「名探偵」の称号を手に入れた！みんなが予想に同調するようになる。",
+                14f, true, Color.parseColor("#A8D8FF")))
+        }
         cd.addView(space(dp(16)))
         val w = e.winner()
         if (w != 0) {
