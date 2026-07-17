@@ -844,6 +844,8 @@ class MainActivity : Activity() {
     private var engine = GameEngine()
     private var night = false
     private var currentTalks = ArrayList<Talk>()
+    private var predictedWolves = LinkedHashSet<Int>()   // 観戦前の人狼予想（2匹）
+    private var predictionActive = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -964,6 +966,227 @@ class MainActivity : Activity() {
         wrap.gravity = Gravity.CENTER
         wrap.addView(charCell(pl, sizeDp, null))
         return wrap
+    }
+
+    // 9体を初期配置（id順・3×3）で固定表示。enabledのidだけタップ可能、他は薄く表示
+    private fun charGridFixed(enabled: Set<Int>, sizeDp: Int,
+                              onClick: ((Player) -> Unit)?): LinearLayout {
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.gravity = Gravity.CENTER_HORIZONTAL
+        var row = LinearLayout(this)
+        engine.players.forEachIndexed { i, pl ->
+            if (i % 3 == 0) {
+                row = LinearLayout(this)
+                row.orientation = LinearLayout.HORIZONTAL
+                row.gravity = Gravity.CENTER
+                col.addView(row, LinearLayout.LayoutParams(-1, -2))
+            }
+            val cell = charCell(pl, sizeDp, null)
+            if (onClick != null && enabled.contains(pl.id)) {
+                cell.setOnClickListener { onClick(pl) }
+            } else if (onClick != null) {
+                cell.alpha = 0.35f
+            }
+            val lp = LinearLayout.LayoutParams(-2, -2)
+            lp.setMargins(dp(3), dp(4), dp(3), dp(4))
+            row.addView(cell, lp)
+        }
+        return col
+    }
+
+    // 村の状況カード（固定配置の全体表示＋現在のステータス）
+    private fun statusCard(): LinearLayout {
+        val e = engine
+        val cd = card()
+        cd.addView(tv("🏘️ 村の状況（配置は固定）", 14f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(4)))
+        cd.addView(charGridFixed(emptySet(), 54, null))
+        cd.addView(space(dp(6)))
+        cd.addView(tv("生存: ${e.alive().size}匹 / ${GameEngine.N}匹　（${e.dayCount}日目）", 13f, true))
+        val dead = e.players.filter { !it.alive }
+        if (dead.isNotEmpty()) {
+            cd.addView(tv("【脱落】" + dead.joinToString("、") { it.pname }, 13f, false,
+                Color.parseColor("#9AA0B5")))
+        }
+        if (e.seerClaimants.isNotEmpty()) {
+            cd.addView(tv("【占い師CO中】" +
+                e.seerClaimants.joinToString("、") { e.players[it].pname }, 13f, false,
+                Color.parseColor("#C9B6FF")))
+        }
+        if (e.publicBlack.isNotEmpty()) {
+            cd.addView(tv("【黒判定】" + e.publicBlack.joinToString("、") { e.players[it].pname },
+                13f, false, Color.parseColor("#FF9B9B")))
+        }
+        if (e.publicWhite.isNotEmpty()) {
+            cd.addView(tv("【白判定】" + e.publicWhite.joinToString("、") { e.players[it].pname },
+                13f, false, Color.parseColor("#A8E6A1")))
+        }
+        return cd
+    }
+
+    // ---------- やられた画面（観戦/予想/終了の選択） ----------
+
+    private fun showHumanDead(cause: String, onContinue: () -> Unit) {
+        val h = engine.human()
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("💀 あなたはやられてしまった…", 20f, true, Color.parseColor("#FF9B9B")))
+        cd.addView(centerChar(h, 100))
+        val ct = tv(cause, 15f, true)
+        ct.gravity = Gravity.CENTER
+        cd.addView(ct)
+        cd.addView(space(dp(12)))
+        cd.addView(tv("このあとどうしますか？", 14f))
+        cd.addView(space(dp(8)))
+        cd.addView(btn("👀 観戦を続ける") { onContinue() })
+        cd.addView(space(dp(8)))
+        cd.addView(btn("🐺 人狼を予想して観戦", Color.parseColor("#7A4FD8")) {
+            showWolfPredict(onContinue)
+        })
+        cd.addView(space(dp(8)))
+        cd.addView(btn("🏁 終了（最終結果を見る）", Color.parseColor("#D8703D")) {
+            fastForward()
+        })
+        pn.addView(cd)
+        pn.addView(space(dp(14)))
+        pn.addView(statusCard())   // 下の空きスペースに全体表示＋ステータス
+        setScreen(pn)
+    }
+
+    // 残りをCPUだけで一気に進めて最終結果へ
+    // nightNextAfterDeath: 処刑死なら次は夜(true)、襲撃死なら次は昼(false)
+    private var nightNextAfterDeath = false
+
+    private fun fastForward() {
+        val e = engine
+        var atNight = nightNextAfterDeath
+        var guard = 0
+        while (e.winner() == 0 && guard++ < 60) {
+            if (atNight) {
+                e.resolveNight(null, null, null)
+                atNight = false
+            } else {
+                e.ensureSeerPhase(false)
+                e.seerPhaseTalks()
+                if (e.winner() != 0) break
+                e.runVote(null)
+                atNight = true
+            }
+        }
+        showGameOver(e.winner())
+    }
+
+    // ---------- 人狼予想（2匹選んで観戦） ----------
+
+    private fun showWolfPredict(onContinue: () -> Unit) {
+        val e = engine
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🐺 人狼はどの2匹？", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(6)))
+        cd.addView(tv("人狼だと思うキャラを2匹タップして選んでください。\n（すでに脱落したキャラも選べます）", 13f))
+        cd.addView(space(dp(8)))
+
+        val sel = tv(
+            if (predictedWolves.isEmpty()) "選択中: なし"
+            else "選択中: " + predictedWolves.joinToString("、") { e.players[it].pname },
+            14f, true, Color.parseColor("#FFC9C9"))
+        cd.addView(sel)
+        cd.addView(space(dp(4)))
+
+        val enabled = e.players.filter { it.id != e.humanId }.map { it.id }.toSet()
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.gravity = Gravity.CENTER_HORIZONTAL
+        var row = LinearLayout(this)
+        e.players.forEachIndexed { i, pl ->
+            if (i % 3 == 0) {
+                row = LinearLayout(this)
+                row.orientation = LinearLayout.HORIZONTAL
+                row.gravity = Gravity.CENTER
+                col.addView(row, LinearLayout.LayoutParams(-1, -2))
+            }
+            val cell = charCell(pl, 64, null)
+            if (predictedWolves.contains(pl.id)) {
+                val bg = GradientDrawable()
+                bg.setColor(Color.argb(70, 255, 100, 100))
+                bg.cornerRadius = dp(10).toFloat()
+                bg.setStroke(dp(3), Color.parseColor("#FF6B6B"))
+                cell.background = bg
+            }
+            if (enabled.contains(pl.id)) {
+                cell.setOnClickListener {
+                    if (predictedWolves.contains(pl.id)) predictedWolves.remove(pl.id)
+                    else if (predictedWolves.size < 2) predictedWolves.add(pl.id)
+                    showWolfPredict(onContinue)
+                }
+            } else {
+                cell.alpha = 0.35f
+            }
+            val lp = LinearLayout.LayoutParams(-2, -2)
+            lp.setMargins(dp(3), dp(4), dp(3), dp(4))
+            row.addView(cell, lp)
+        }
+        cd.addView(col)
+        cd.addView(space(dp(10)))
+        if (predictedWolves.size == 2) {
+            cd.addView(btn("この2匹で予想して観戦する", Color.parseColor("#D8703D")) {
+                predictionActive = true
+                onContinue()
+            })
+        } else {
+            cd.addView(tv("あと ${2 - predictedWolves.size} 匹選んでください", 13f, false,
+                Color.parseColor("#BFD0FF")))
+        }
+        cd.addView(space(dp(6)))
+        cd.addView(btn("やっぱり戻る") {
+            predictedWolves.clear()
+            showHumanDead("……", onContinue)
+        })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    // 答え合わせ画面
+    private fun showPredictionResult() {
+        val e = engine
+        val actual = e.players.filter { it.role.isWolf }.map { it.id }.toSet()
+        val correct = predictedWolves.count { actual.contains(it) }
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🔍 予想の答え合わせ", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(8)))
+        val big = tv("2匹中 $correct 匹 正解！", 26f, true,
+            when (correct) {
+                2 -> Color.parseColor("#A8E6A1")
+                1 -> Color.parseColor("#FFE28A")
+                else -> Color.parseColor("#FF9B9B")
+            })
+        big.gravity = Gravity.CENTER
+        cd.addView(big)
+        cd.addView(space(dp(12)))
+        cd.addView(tv("【あなたの予想】", 14f, true))
+        for (id in predictedWolves) {
+            val pl = e.players[id]
+            val hit = actual.contains(id)
+            val rowL = LinearLayout(this)
+            rowL.orientation = LinearLayout.HORIZONTAL
+            rowL.gravity = Gravity.CENTER_VERTICAL
+            rowL.addView(CharacterView(this, pl.animal, true),
+                LinearLayout.LayoutParams(dp(48), dp(48)))
+            rowL.addView(tv("  ${pl.pname}：" + (if (hit) "⭕ 人狼だった！" else "❌ 人狼ではなかった"),
+                15f, true, if (hit) Color.parseColor("#A8E6A1") else Color.parseColor("#FF9B9B")))
+            cd.addView(rowL)
+            cd.addView(space(dp(4)))
+        }
+        cd.addView(space(dp(8)))
+        cd.addView(tv("【本当の人狼】" + actual.joinToString("、") { e.players[it].pname },
+            14f, true, Color.parseColor("#FF9B9B")))
+        cd.addView(space(dp(14)))
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
+        setScreen(pn)
     }
 
     // ---------- 昼の会話：吹き出し ----------
@@ -1165,6 +1388,8 @@ class MainActivity : Activity() {
         engine = GameEngine()
         engine.setup()
         currentTalks = ArrayList()
+        predictedWolves = LinkedHashSet()
+        predictionActive = false
         showRoleReveal()
     }
 
@@ -1255,7 +1480,7 @@ class MainActivity : Activity() {
         cd.addView(tv("襲撃する相手を選んでください"))
         cd.addView(space(dp(10)))
         val cands = engine.alive().filter { !it.role.isWolf }
-        cd.addView(charGrid(cands, 80, 3) { t -> finishNight(t, null, null) })
+        cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t -> finishNight(t, null, null) })
         pn.addView(cd)
         addNightVictims(pn)
         setScreen(pn)
@@ -1271,7 +1496,7 @@ class MainActivity : Activity() {
         val known = engine.humanSeerResults.keys
         var cands = engine.alive().filter { it.id != engine.humanId && !known.contains(it.id) }
         if (cands.isEmpty()) cands = engine.alive().filter { it.id != engine.humanId }
-        cd.addView(charGrid(cands, 80, 3) { t -> finishNight(null, t, null) })
+        cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t -> finishNight(null, t, null) })
         pn.addView(cd)
         addNightVictims(pn)
         setScreen(pn)
@@ -1294,7 +1519,7 @@ class MainActivity : Activity() {
             cands = engine.alive().filter { it.id != engine.humanId }
         }
         cd.addView(space(dp(10)))
-        cd.addView(charGrid(cands, 80, 3) { t -> finishNight(null, null, t) })
+        cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t -> finishNight(null, null, t) })
         pn.addView(cd)
         addNightVictims(pn)
         setScreen(pn)
@@ -1366,6 +1591,12 @@ class MainActivity : Activity() {
         val w = e.winner()
         if (w != 0) {
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
+        } else if (v != null && v.id == e.humanId) {
+            // あなたが襲撃された → やられた画面へ
+            cd.addView(btn("次へ", Color.parseColor("#5A4FD8")) {
+                nightNextAfterDeath = false   // 次は昼フェーズから
+                showHumanDead("昨夜、人狼に襲撃されてしまった…") { showSeerPhase() }
+            })
         } else {
             cd.addView(btn("🔮 占い師フェーズへ") { showSeerPhase() })
         }
@@ -1515,7 +1746,7 @@ class MainActivity : Activity() {
         cd.addView(tv("処刑する相手に投票してください"))
         cd.addView(space(dp(10)))
         val cands = e.alive().filter { it.id != e.humanId }
-        cd.addView(charGrid(cands, 80, 3) { t ->
+        cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t ->
             val ex = e.runVote(t)
             showExecution(ex)
         })
@@ -1543,6 +1774,11 @@ class MainActivity : Activity() {
         val w = e.winner()
         if (w != 0) {
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
+        } else if (ex.id == e.humanId) {
+            cd.addView(btn("次へ", Color.parseColor("#5A4FD8")) {
+                nightNextAfterDeath = true   // 次は夜から
+                showHumanDead("投票で処刑されてしまった…") { beginNight() }
+            })
         } else {
             cd.addView(btn("夜になる", Color.parseColor("#5A4FD8")) { beginNight() })
         }
@@ -1585,6 +1821,12 @@ class MainActivity : Activity() {
                 if (p2.role.isWolf) Color.parseColor("#FF9B9B") else Color.WHITE))
         }
         cd.addView(space(dp(16)))
+        if (predictionActive && predictedWolves.size == 2) {
+            cd.addView(btn("🔍 人狼予想の答え合わせ", Color.parseColor("#7A4FD8")) {
+                showPredictionResult()
+            })
+            cd.addView(space(dp(8)))
+        }
         cd.addView(btn("もう一度あそぶ", Color.parseColor("#D8703D")) { startGame() })
         cd.addView(space(dp(8)))
         cd.addView(btn("タイトルへ") { showTitle() })
