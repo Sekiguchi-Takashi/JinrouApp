@@ -35,13 +35,17 @@ enum class Role(val jp: String, val desc: String, val isWolf: Boolean) {
 
 enum class Animal(val jp: String) {
     RABBIT("うさぎ"), FOX("きつね"), CAT("ねこ"), DOG("いぬ"),
-    BEAR("くま"), OWL("ふくろう"), SQUIRREL("りす")
+    BEAR("くま"), OWL("ふくろう"), SQUIRREL("りす"),
+    PANDA("ぱんだ"), PENGUIN("ぺんぎん")
 }
 
 class Player(val id: Int, val pname: String, val animal: Animal) {
     var role: Role = Role.VILLAGER
     var alive = true
 }
+
+// 昼の発言（吹き出し・まとめ図用の構造化データ）
+class Talk(val speakerId: Int, val text: String, val targetId: Int, val suspect: Boolean)
 
 // =====================================================
 // ゲームエンジン（ロジック）
@@ -50,7 +54,8 @@ class Player(val id: Int, val pname: String, val animal: Animal) {
 class GameEngine {
 
     companion object {
-        val NAMES = listOf("ミミ", "コン", "タマ", "ポチ", "クマ吉", "ホウ", "リスケ")
+        val NAMES = listOf("ミミ", "コン", "タマ", "ポチ", "クマ吉", "ホウ", "リスケ", "パオ", "ペン太")
+        const val N = 9
     }
 
     val players = ArrayList<Player>()
@@ -75,6 +80,7 @@ class GameEngine {
     var lastVictim: Player? = null
     var lastExecuted: Player? = null
     var lastVotes: Map<Int, Int> = emptyMap()
+    val wolfVictimIds = ArrayList<Int>()   // 人狼に襲撃されたキャラ（夜画面の下に表示）
 
     fun human() = players[humanId]
     fun alive() = players.filter { it.alive }
@@ -82,14 +88,15 @@ class GameEngine {
     fun setup() {
         players.clear()
         val animals = Animal.values()
-        for (i in 0 until 7) players.add(Player(i, NAMES[i], animals[i]))
+        for (i in 0 until N) players.add(Player(i, NAMES[i], animals[i]))
         val roles = mutableListOf(
-            Role.VILLAGER, Role.VILLAGER, Role.SEER, Role.MEDIUM,
-            Role.HUNTER, Role.WEREWOLF, Role.WEREWOLF
+            Role.VILLAGER, Role.VILLAGER, Role.VILLAGER, Role.VILLAGER,
+            Role.SEER, Role.MEDIUM, Role.HUNTER,
+            Role.WEREWOLF, Role.WEREWOLF
         )
         roles.shuffle()
-        for (i in 0 until 7) players[i].role = roles[i]
-        humanId = Random.nextInt(7)
+        for (i in 0 until N) players[i].role = roles[i]
+        humanId = Random.nextInt(N)
     }
 
     // 0=続行 1=村人チーム勝利 2=人狼チーム勝利
@@ -169,6 +176,7 @@ class GameEngine {
             } else {
                 target.alive = false
                 lastVictim = target
+                wolfVictimIds.add(target.id)
             }
         }
 
@@ -204,15 +212,20 @@ class GameEngine {
         lastExecuted = null
     }
 
-    fun discussionLines(): List<String> {
-        val lines = ArrayList<String>()
+    fun discussionTalks(): List<Talk> {
+        val talks = ArrayList<Talk>()
         val av = alive()
-        val templates = listOf(
+        val suspectTpl = listOf(
             "%s がちょっと怪しい気がするなぁ…",
             "%s、昨日なんだか静かだったよね？",
             "ぼくは村人だよ！%s の方が怪しいと思う！",
             "うーん、%s の言動が気になる…",
             "%s を信じていいのかな…？"
+        )
+        val trustTpl = listOf(
+            "%s は白判定が出てるし、信じていいと思う！",
+            "%s は人狼じゃないって占われてるよね。",
+            "ぼくは %s を信頼してるよ。"
         )
         for (p in av) {
             if (p.id == humanId) continue
@@ -222,17 +235,23 @@ class GameEngine {
             }
             if (suspects.isEmpty()) continue
             val black = suspects.filter { publicBlack.contains(it.id) }
+            val whites = suspects.filter { publicWhite.contains(it.id) }
             if (black.isNotEmpty()) {
                 val t = black.random()
-                lines.add("${p.pname}「${t.pname} は人狼と占われてる！今日は ${t.pname} に投票しよう！」")
+                talks.add(Talk(p.id,
+                    "${t.pname} は人狼と占われてる！今日は ${t.pname} に投票しよう！",
+                    t.id, true))
+            } else if (whites.isNotEmpty() && Random.nextInt(100) < 30) {
+                val t = whites.random()
+                talks.add(Talk(p.id, trustTpl.random().format(t.pname), t.id, false))
             } else {
                 val notWhite = suspects.filter { !publicWhite.contains(it.id) }
                 val pool = if (notWhite.isNotEmpty()) notWhite else suspects
                 val t = pool.random()
-                lines.add(p.pname + "「" + templates.random().format(t.pname) + "」")
+                talks.add(Talk(p.id, suspectTpl.random().format(t.pname), t.id, true))
             }
         }
-        return lines
+        return talks
     }
 
     fun runVote(humanVote: Player?): Player {
@@ -264,30 +283,30 @@ class GameEngine {
         return executed
     }
 
-    fun publishHumanSeer(): List<String> {
+    fun publishHumanSeer(): List<Talk> {
         claimedSeerId = humanId
-        val msgs = ArrayList<String>()
+        val msgs = ArrayList<Talk>()
         for ((id, isWolf) in humanSeerResults) {
             if (publishedSeer.add(id)) {
                 val nm = players[id].pname
                 if (isWolf) {
                     publicBlack.add(id)
-                    msgs.add("あなた「占いCO！ $nm は 人狼 だ！」")
+                    msgs.add(Talk(humanId, "占いCO！ $nm は 人狼 だ！", id, true))
                 } else {
                     publicWhite.add(id)
-                    msgs.add("あなた「占いCO。$nm は 人狼ではない」")
+                    msgs.add(Talk(humanId, "占いCO。$nm は 人狼ではない", id, false))
                 }
             }
         }
         return msgs
     }
 
-    fun publishHumanMedium(): List<String> {
-        val msgs = ArrayList<String>()
+    fun publishHumanMedium(): List<Talk> {
+        val msgs = ArrayList<Talk>()
         for ((id, isWolf) in humanMediumResults) {
             val nm = players[id].pname
             val resText = if (isWolf) "人狼だった" else "人狼ではなかった"
-            msgs.add("あなた「霊能CO：$nm は $resText」")
+            msgs.add(Talk(humanId, "霊能CO：$nm は $resText", id, isWolf))
         }
         humanMediumResults.clear()
         return msgs
@@ -311,6 +330,8 @@ object CharacterArt {
         Animal.BEAR -> Color.parseColor("#9C6B43")
         Animal.OWL -> Color.parseColor("#B39A7C")
         Animal.SQUIRREL -> Color.parseColor("#DE9057")
+        Animal.PANDA -> Color.parseColor("#F4F1EA")
+        Animal.PENGUIN -> Color.parseColor("#4A5A70")
     }
 
     private fun irisColor(a: Animal) = when (a) {
@@ -321,6 +342,8 @@ object CharacterArt {
         Animal.BEAR -> Color.parseColor("#4A342A")
         Animal.OWL -> Color.parseColor("#E8A020")
         Animal.SQUIRREL -> Color.parseColor("#6B4A2A")
+        Animal.PANDA -> Color.parseColor("#3A3A3A")
+        Animal.PENGUIN -> Color.parseColor("#4A78B0")
     }
 
     private fun darken(c0: Int): Int {
@@ -373,6 +396,22 @@ object CharacterArt {
             c.drawOval(RectF(cx - hr * 0.42f, hy + hr * 0.1f, cx + hr * 0.42f, hy + hr * 0.75f), p)
         }
 
+        // ペンギンの白い顔まわり
+        if (a == Animal.PENGUIN) {
+            p.color = Color.parseColor("#F6F6F2")
+            c.drawOval(RectF(cx - hr * 0.72f, hy - hr * 0.45f, cx + hr * 0.72f, hy + hr * 0.85f), p)
+        }
+
+        // パンダの目のまわりの黒い模様
+        if (a == Animal.PANDA) {
+            p.color = Color.parseColor("#3A3A3A")
+            for (sgn0 in intArrayOf(-1, 1)) {
+                val px = cx + sgn0 * hr * 0.42f
+                c.drawOval(RectF(px - hr * 0.36f, hy - hr * 0.55f,
+                                 px + hr * 0.36f, hy + hr * 0.35f), p)
+            }
+        }
+
         // アニメ風の大きな目
         val eyeY = hy - hr * 0.05f
         val eyeDX = hr * 0.42f
@@ -399,7 +438,7 @@ object CharacterArt {
         }
 
         // 鼻と口
-        if (a == Animal.OWL) {
+        if (a == Animal.OWL || a == Animal.PENGUIN) {
             p.color = Color.parseColor("#F5A623")
             val beak = Path()
             beak.moveTo(cx - hr * 0.12f, hy + hr * 0.15f)
@@ -511,6 +550,17 @@ object CharacterArt {
                     c.drawCircle(cx + sgn * hr * 0.6f, hy - hr * 0.85f, hr * 0.13f, p)
                 }
             }
+            Animal.PANDA -> {
+                p.color = Color.parseColor("#3A3A3A")
+                for (sgn in intArrayOf(-1, 1)) {
+                    c.drawCircle(cx + sgn * hr * 0.68f, hy - hr * 0.78f, hr * 0.32f, p)
+                }
+            }
+            Animal.PENGUIN -> {
+                // 耳なし。かわりに頭頂の小さな羽
+                p.color = dark
+                c.drawOval(RectF(cx - hr * 0.12f, hy - hr * 1.25f, cx + hr * 0.12f, hy - hr * 0.85f), p)
+            }
         }
     }
 }
@@ -520,6 +570,96 @@ class CharacterView(context: Context, private val animal: Animal, private val al
         super.onDraw(canvas)
         val s = minOf(width, height).toFloat()
         CharacterArt.draw(canvas, animal, width / 2f, height / 2f, s, aliveFlag)
+    }
+}
+
+// =====================================================
+// まとめ相関図（キャラを円形配置し、疑いの矢印を🐺付きで描く）
+// =====================================================
+
+class SummaryView(context: Context, private val engine: GameEngine,
+                  private val suspects: List<Talk>) : View(context) {
+
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+
+    override fun onDraw(c: Canvas) {
+        super.onDraw(c)
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+        val av = engine.alive()
+        if (av.isEmpty()) return
+
+        val cx = w / 2f
+        val cy = h / 2f
+        val charSize = w * 0.15f
+        val radius = minOf(w, h) / 2f - charSize * 0.75f - w * 0.03f
+
+        // 各キャラの座標（生存者のみを円形配置）
+        val pos = HashMap<Int, FloatArray>()
+        av.forEachIndexed { i, pl ->
+            val ang = (-Math.PI / 2 + 2 * Math.PI * i / av.size)
+            val x = cx + (radius * Math.cos(ang)).toFloat()
+            val y = cy + (radius * Math.sin(ang)).toFloat()
+            pos[pl.id] = floatArrayOf(x, y)
+        }
+
+        // 矢印（キャラの下に描く）
+        for (t in suspects) {
+            val a = pos[t.speakerId] ?: continue
+            val b = pos[t.targetId] ?: continue
+            drawArrow(c, a[0], a[1], b[0], b[1], charSize * 0.62f)
+        }
+
+        // キャラと名前
+        tp.textSize = w * 0.042f
+        for (pl in av) {
+            val q = pos[pl.id] ?: continue
+            CharacterArt.draw(c, pl.animal, q[0], q[1], charSize, pl.alive)
+            tp.color = Color.WHITE
+            tp.setShadowLayer(4f, 0f, 2f, Color.BLACK)
+            val nm = if (pl.id == engine.humanId) "${pl.pname}★" else pl.pname
+            c.drawText(nm, q[0], q[1] + charSize * 0.78f, tp)
+            tp.clearShadowLayer()
+        }
+    }
+
+    private fun drawArrow(c: Canvas, x1: Float, y1: Float, x2: Float, y2: Float, margin: Float) {
+        val dx = x2 - x1
+        val dy = y2 - y1
+        val len = Math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        if (len < margin * 2.2f) return
+        val ux = dx / len
+        val uy = dy / len
+        val sx = x1 + ux * margin
+        val sy = y1 + uy * margin
+        val ex = x2 - ux * margin
+        val ey = y2 - uy * margin
+
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = width * 0.008f
+        p.color = Color.parseColor("#FF7B7B")
+        c.drawLine(sx, sy, ex, ey, p)
+
+        // 矢じり
+        p.style = Paint.Style.FILL
+        val ah = width * 0.035f
+        val px = -uy
+        val py = ux
+        val head = Path()
+        head.moveTo(ex, ey)
+        head.lineTo(ex - ux * ah + px * ah * 0.55f, ey - uy * ah + py * ah * 0.55f)
+        head.lineTo(ex - ux * ah - px * ah * 0.55f, ey - uy * ah - py * ah * 0.55f)
+        head.close()
+        c.drawPath(head, p)
+
+        // 疑い＝矢印の途中に狼マーク
+        val mx = (sx + ex) / 2f
+        val my = (sy + ey) / 2f
+        tp.textSize = width * 0.055f
+        tp.color = Color.WHITE
+        c.drawText("🐺", mx, my + tp.textSize * 0.35f, tp)
     }
 }
 
@@ -635,7 +775,7 @@ class MainActivity : Activity() {
     private lateinit var root: FrameLayout
     private var engine = GameEngine()
     private var night = false
-    private var currentDayLines = ArrayList<String>()
+    private var currentTalks = ArrayList<Talk>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -758,6 +898,112 @@ class MainActivity : Activity() {
         return wrap
     }
 
+    // ---------- 昼の会話：吹き出し ----------
+
+    private fun talkBubble(t: Talk): LinearLayout {
+        val sp = engine.players[t.speakerId]
+        val isYou = t.speakerId == engine.humanId
+
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.TOP
+
+        // 左：キャラクター
+        val left = LinearLayout(this)
+        left.orientation = LinearLayout.VERTICAL
+        left.gravity = Gravity.CENTER_HORIZONTAL
+        left.addView(CharacterView(this, sp.animal, sp.alive),
+            LinearLayout.LayoutParams(dp(52), dp(52)))
+        row.addView(left)
+
+        // 右：吹き出し
+        val bubble = LinearLayout(this)
+        bubble.orientation = LinearLayout.VERTICAL
+        bubble.setPadding(dp(12), dp(8), dp(12), dp(10))
+        val bg = GradientDrawable()
+        bg.setColor(if (isYou) Color.parseColor("#F0FFE8") else Color.WHITE)
+        bg.cornerRadius = dp(12).toFloat()
+        bg.setStroke(dp(2), if (isYou) Color.parseColor("#3D9E6B") else Color.parseColor("#B9C2D8"))
+        bubble.background = bg
+
+        // 名前だけ強調
+        val nameText = if (isYou) "${sp.pname}（あなた）" else sp.pname
+        val nm = tv(nameText, 15f, true,
+            if (isYou) Color.parseColor("#2E7A4E") else Color.parseColor("#B05A2A"))
+        bubble.addView(nm)
+        bubble.addView(tv(t.text, 14f, false, Color.parseColor("#22283C")))
+
+        val lp = LinearLayout.LayoutParams(0, -2, 1f)
+        lp.setMargins(dp(8), 0, 0, 0)
+        row.addView(bubble, lp)
+        return row
+    }
+
+    // ---------- まとめ（相関図ポップアップ） ----------
+
+    private fun showSummaryDialog() {
+        val e = engine
+        val talks = currentTalks
+
+        val d = android.app.Dialog(this)
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+
+        val outer = card()
+        val sc = ScrollView(this)
+        sc.addView(outer)
+
+        outer.addView(tv("📋 ${e.dayCount}日目のまとめ", 19f, true, Color.parseColor("#FFE28A")))
+        outer.addView(space(dp(8)))
+        outer.addView(tv("🐺付きの矢印 = 疑っている相手", 12f, false, Color.parseColor("#BFD0FF")))
+        outer.addView(space(dp(6)))
+
+        // 相関図（疑いの矢印のみ描画）
+        val suspectTalks = talks.filter { it.suspect }
+        val dm = resources.displayMetrics
+        val side = (dm.widthPixels * 0.82f).toInt()
+        outer.addView(SummaryView(this, e, suspectTalks),
+            LinearLayout.LayoutParams(side, side))
+        outer.addView(space(dp(10)))
+
+        // その他は文字で簡単に
+        val trust = talks.filter { !it.suspect }
+        if (trust.isNotEmpty()) {
+            outer.addView(tv("【信頼・白の発言】", 13f, true, Color.parseColor("#A8E6A1")))
+            for (t in trust) {
+                outer.addView(tv("・${e.players[t.speakerId].pname} → ${e.players[t.targetId].pname}（信頼）",
+                    13f, false, Color.parseColor("#D8F5D2")))
+            }
+            outer.addView(space(dp(6)))
+        }
+        if (e.publicBlack.isNotEmpty()) {
+            outer.addView(tv("【黒判定（占い）】" +
+                e.publicBlack.joinToString("、") { e.players[it].pname },
+                13f, true, Color.parseColor("#FF9B9B")))
+        }
+        if (e.publicWhite.isNotEmpty()) {
+            outer.addView(tv("【白判定（占い）】" +
+                e.publicWhite.joinToString("、") { e.players[it].pname },
+                13f, true, Color.parseColor("#A8E6A1")))
+        }
+        if (e.claimedSeerId >= 0) {
+            outer.addView(tv("【占いCO中】${e.players[e.claimedSeerId].pname}",
+                13f, false, Color.parseColor("#C9B6FF")))
+        }
+        val dead = e.players.filter { !it.alive }
+        if (dead.isNotEmpty()) {
+            outer.addView(tv("【脱落】" + dead.joinToString("、") { it.pname },
+                13f, false, Color.parseColor("#9AA0B5")))
+        }
+
+        outer.addView(space(dp(12)))
+        outer.addView(btn("とじる") { d.dismiss() })
+
+        d.setContentView(sc)
+        d.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        d.window?.setLayout((dm.widthPixels * 0.94f).toInt(), -2)
+        d.show()
+    }
+
     // ---------- タイトル / ルール ----------
 
     private fun showTitle() {
@@ -778,7 +1024,7 @@ class MainActivity : Activity() {
         val preview = ArrayList<Player>()
         Animal.values().forEachIndexed { i, an -> preview.add(Player(i, GameEngine.NAMES[i], an)) }
         val cd0 = card()
-        cd0.addView(charGrid(preview, 58, 4, null))
+        cd0.addView(charGrid(preview, 58, 3, null))
         pn.addView(cd0, LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(14)))
 
@@ -825,8 +1071,8 @@ class MainActivity : Activity() {
             "・村人チーム：すべての人狼を処刑すれば勝利。\n" +
             "・人狼チーム：人狼の人数が村人側の人数と同じになれば勝利。", 14f))
         cd.addView(space(dp(10)))
-        cd.addView(tv("【構成（総数7人）】", 15f, true))
-        cd.addView(tv("村人 ×2 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2", 14f))
+        cd.addView(tv("【構成（総数9人）】", 15f, true))
+        cd.addView(tv("村人 ×4 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2", 14f))
         cd.addView(space(dp(14)))
         cd.addView(btn("タイトルへ戻る") { showTitle() })
         pn.addView(cd)
@@ -838,7 +1084,7 @@ class MainActivity : Activity() {
     private fun startGame() {
         engine = GameEngine()
         engine.setup()
-        currentDayLines = ArrayList()
+        currentTalks = ArrayList()
         showRoleReveal()
     }
 
@@ -887,6 +1133,19 @@ class MainActivity : Activity() {
         }
     }
 
+    // 夜画面の下の空きスペースに、人狼にやられたキャラを表示
+    private fun addNightVictims(pn: LinearLayout) {
+        val ids = engine.wolfVictimIds
+        if (ids.isEmpty()) return
+        pn.addView(space(dp(14)))
+        val cd = card()
+        cd.addView(tv("🐺 これまでに襲撃されたどうぶつ", 13f, true, Color.parseColor("#FFC9C9")))
+        cd.addView(space(dp(4)))
+        val victims = ids.map { engine.players[it] }
+        cd.addView(charGrid(victims, 56, 4, null))
+        pn.addView(cd)
+    }
+
     private fun showNightSleep(msg: String) {
         val pn = panel()
         val cd = card()
@@ -896,6 +1155,7 @@ class MainActivity : Activity() {
         cd.addView(space(dp(16)))
         cd.addView(btn("朝を待つ", Color.parseColor("#5A4FD8")) { finishNight(null, null, null) })
         pn.addView(cd)
+        addNightVictims(pn)
         setScreen(pn)
     }
 
@@ -914,6 +1174,7 @@ class MainActivity : Activity() {
         val cands = engine.alive().filter { !it.role.isWolf }
         cd.addView(charGrid(cands, 80, 3) { t -> finishNight(t, null, null) })
         pn.addView(cd)
+        addNightVictims(pn)
         setScreen(pn)
     }
 
@@ -929,6 +1190,7 @@ class MainActivity : Activity() {
         if (cands.isEmpty()) cands = engine.alive().filter { it.id != engine.humanId }
         cd.addView(charGrid(cands, 80, 3) { t -> finishNight(null, t, null) })
         pn.addView(cd)
+        addNightVictims(pn)
         setScreen(pn)
     }
 
@@ -942,6 +1204,7 @@ class MainActivity : Activity() {
         val cands = engine.alive().filter { it.id != engine.humanId }
         cd.addView(charGrid(cands, 80, 3) { t -> finishNight(null, null, t) })
         pn.addView(cd)
+        addNightVictims(pn)
         setScreen(pn)
     }
 
@@ -1013,7 +1276,7 @@ class MainActivity : Activity() {
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
         } else {
             cd.addView(btn("昼の話し合いへ") {
-                currentDayLines = ArrayList(e.discussionLines())
+                currentTalks = ArrayList(e.discussionTalks())
                 showDay()
             })
         }
@@ -1036,12 +1299,13 @@ class MainActivity : Activity() {
                 12f, false, Color.parseColor("#FFC9C9")))
         }
         cd.addView(space(dp(8)))
-        cd.addView(charGrid(e.players, 58, 4, null))
-        cd.addView(space(dp(8)))
+        cd.addView(btn("📋 まとめを見る", Color.parseColor("#3D9E6B")) { showSummaryDialog() })
+        cd.addView(space(dp(10)))
 
-        for (line in currentDayLines) {
-            cd.addView(tv(line, 14f))
-            cd.addView(space(dp(6)))
+        // 会話：キャラを1列に並べて吹き出しで表示（画面ごと下にスクロール可能）
+        for (t in currentTalks) {
+            cd.addView(talkBubble(t))
+            cd.addView(space(dp(8)))
         }
 
         // 占い師（人間）の手元の結果とCO
@@ -1057,7 +1321,7 @@ class MainActivity : Activity() {
             if (e.humanSeerResults.keys.any { !e.publishedSeer.contains(it) }) {
                 cd.addView(space(dp(6)))
                 cd.addView(btn("🔮 占い結果を公開する（CO）", Color.parseColor("#7A4FD8")) {
-                    currentDayLines.addAll(e.publishHumanSeer())
+                    currentTalks.addAll(e.publishHumanSeer())
                     showDay()
                 })
             }
@@ -1067,7 +1331,7 @@ class MainActivity : Activity() {
         if (h.alive && h.role == Role.MEDIUM && e.humanMediumResults.isNotEmpty()) {
             cd.addView(space(dp(6)))
             cd.addView(btn("👻 霊能結果を公開する（CO）", Color.parseColor("#4F7AD8")) {
-                currentDayLines.addAll(e.publishHumanMedium())
+                currentTalks.addAll(e.publishHumanMedium())
                 showDay()
             })
         }
