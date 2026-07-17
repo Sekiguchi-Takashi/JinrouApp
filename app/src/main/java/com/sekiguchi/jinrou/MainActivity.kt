@@ -71,7 +71,14 @@ class GameEngine {
     val publishedSeer = HashSet<Int>()
     val publicBlack = HashSet<Int>()
     val publicWhite = HashSet<Int>()
-    var claimedSeerId = -1
+
+    // 占い師フェーズ（2日目の朝から）
+    var seerPhaseStarted = false          // 最初の名乗り出が済んだか
+    val seerClaimants = ArrayList<Int>()  // 名乗り出た占い師（本物/偽物混在・以後増えない）
+    var fakeSeerId = -1                   // 偽占い師（人狼）のid
+    val suspicionBoost = HashSet<Int>()   // フェーズで黒と言われた人（みんなが疑いやすくなる）
+    private val cpuSeerAnnounced = HashSet<Int>()
+    private val fakeAccused = HashSet<Int>()
 
     // CPU占い師の記録
     val cpuSeerResults = LinkedHashMap<Int, Boolean>()
@@ -97,6 +104,7 @@ class GameEngine {
         roles.shuffle()
         for (i in 0 until N) players[i].role = roles[i]
         humanId = Random.nextInt(N)
+        dayCount = 1   // 1日目は昼の話し合いから始まる
     }
 
     // 0=続行 1=村人チーム勝利 2=人狼チーム勝利
@@ -111,9 +119,10 @@ class GameEngine {
     private fun cpuWolfTarget(): Player? {
         val cands = alive().filter { !it.role.isWolf }
         if (cands.isEmpty()) return null
-        if (claimedSeerId >= 0) {
-            val seer = players[claimedSeerId]
-            if (seer.alive && !seer.role.isWolf && Random.nextInt(100) < 70) return seer
+        val realSeer = players.firstOrNull { it.role == Role.SEER }
+        if (realSeer != null && realSeer.alive &&
+            seerClaimants.contains(realSeer.id) && Random.nextInt(100) < 70) {
+            return realSeer
         }
         return cands.random()
     }
@@ -128,10 +137,10 @@ class GameEngine {
     private fun cpuGuardTarget(hunter: Player): Player? {
         val cands = alive().filter { it.id != hunter.id }
         if (cands.isEmpty()) return null
-        if (claimedSeerId >= 0 && claimedSeerId != hunter.id) {
-            val seer = players[claimedSeerId]
-            if (seer.alive && Random.nextInt(100) < 60) return seer
-        }
+        val claimAlive = seerClaimants.map { players[it] }
+            .filter { it.alive && it.id != hunter.id }
+        if (claimAlive.size >= 2) return claimAlive.random()          // 2人COなら必ずどちらかを守る
+        if (claimAlive.size == 1 && Random.nextInt(100) < 60) return claimAlive[0]
         return cands.random()
     }
 
@@ -180,22 +189,6 @@ class GameEngine {
             }
         }
 
-        // CPU占い師の朝のCO（生きていれば）
-        if (seer != null && seer.id != humanId && seer.alive) {
-            claimedSeerId = seer.id
-            val last = cpuSeerResults.entries.lastOrNull()
-            if (last != null) {
-                val t = players[last.key]
-                if (last.value) {
-                    publicBlack.add(t.id)
-                    morningLog.add("${seer.pname}「占いCO！ ${t.pname} は 人狼 だった！」")
-                } else {
-                    publicWhite.add(t.id)
-                    morningLog.add("${seer.pname}「占いCO。${t.pname} は 人狼ではなかった よ」")
-                }
-            }
-        }
-
         // 霊能結果（前日の処刑者）
         val medium = players.firstOrNull { it.role == Role.MEDIUM && it.alive }
         val exd = lastExecuted
@@ -210,6 +203,96 @@ class GameEngine {
             }
         }
         lastExecuted = null
+    }
+
+    // ---------- 占い師フェーズ ----------
+
+    // 最初のフェーズで名乗り出を確定（以後、途中から名乗り出ることはない）
+    fun ensureSeerPhase(humanClaims: Boolean) {
+        if (seerPhaseStarted) return
+        seerPhaseStarted = true
+        val realSeer = players.firstOrNull { it.role == Role.SEER }
+        if (realSeer != null && realSeer.alive) {
+            if (realSeer.id == humanId) {
+                if (humanClaims) seerClaimants.add(realSeer.id)
+            } else if (Random.nextInt(100) < 75) {
+                seerClaimants.add(realSeer.id)   // 本物も名乗り出ないことがある
+            }
+        }
+        // 人狼のうち1人（CPU）が偽占い師として名乗り出ることがある
+        val cpuWolves = players.filter { it.role.isWolf && it.alive && it.id != humanId }
+        if (cpuWolves.isNotEmpty() && Random.nextInt(100) < 55) {
+            fakeSeerId = cpuWolves.random().id
+            seerClaimants.add(fakeSeerId)
+        }
+        seerClaimants.shuffle()
+    }
+
+    // 今朝の占い師フェーズの発言（名乗り出た者だけが話す）
+    fun seerPhaseTalks(): List<Talk> {
+        val talks = ArrayList<Talk>()
+        var realTalk: Talk? = null
+        val realSeer = players.firstOrNull { it.role == Role.SEER }
+
+        // 本物（CPU）の発表：本当のことを言う
+        if (realSeer != null && realSeer.alive && realSeer.id != humanId &&
+            seerClaimants.contains(realSeer.id)) {
+            val e2 = cpuSeerResults.entries.lastOrNull { !cpuSeerAnnounced.contains(it.key) }
+            if (e2 != null) {
+                cpuSeerAnnounced.add(e2.key)
+                val t = players[e2.key]
+                realTalk = if (e2.value) {
+                    publicBlack.add(t.id); suspicionBoost.add(t.id)
+                    Talk(realSeer.id, "占い結果！ ${t.pname} は 人狼 だ！", t.id, true)
+                } else {
+                    publicWhite.add(t.id)
+                    Talk(realSeer.id, "占い結果。${t.pname} は 人狼ではない よ", t.id, false)
+                }
+                talks.add(realTalk!!)
+            }
+        }
+
+        // 本物（あなた）の発表：名乗り出ていれば未公開分を発表
+        if (realSeer != null && realSeer.alive && realSeer.id == humanId &&
+            seerClaimants.contains(humanId)) {
+            for ((id, isWolf) in humanSeerResults) {
+                if (publishedSeer.add(id)) {
+                    val nm = players[id].pname
+                    val tk = if (isWolf) {
+                        publicBlack.add(id); suspicionBoost.add(id)
+                        Talk(humanId, "占い結果！ $nm は 人狼 だ！", id, true)
+                    } else {
+                        publicWhite.add(id)
+                        Talk(humanId, "占い結果。$nm は 人狼ではない", id, false)
+                    }
+                    talks.add(tk)
+                    if (realTalk == null) realTalk = tk
+                }
+            }
+        }
+
+        // 偽物（人狼）の発表：本物のマネをするか、人狼以外を「人狼」と言う
+        val fake = if (fakeSeerId >= 0) players[fakeSeerId] else null
+        if (fake != null && fake.alive) {
+            val copy = realTalk != null && Random.nextInt(100) < 50
+            if (copy) {
+                val rt = realTalk!!
+                talks.add(Talk(fake.id, rt.text, rt.targetId, rt.suspect))
+                if (rt.suspect) { publicBlack.add(rt.targetId); suspicionBoost.add(rt.targetId) }
+                else publicWhite.add(rt.targetId)
+            } else {
+                val cands = alive().filter {
+                    it.id != fake.id && !it.role.isWolf && !fakeAccused.contains(it.id)
+                }
+                if (cands.isNotEmpty()) {
+                    val t = cands.random()
+                    fakeAccused.add(t.id)
+                    publicBlack.add(t.id); suspicionBoost.add(t.id)
+                    talks.add(Talk(fake.id, "占い結果！ ${t.pname} は 人狼 だ！", t.id, true))
+                }
+            }
+        }
+        return talks
     }
 
     fun discussionTalks(): List<Talk> {
@@ -229,14 +312,14 @@ class GameEngine {
         )
         for (p in av) {
             if (p.id == humanId) continue
-            if (p.id == claimedSeerId) continue
+            if (seerClaimants.contains(p.id)) continue   // 占い師CO中は昼は静かに
             val suspects = av.filter {
                 it.id != p.id && (p.role != Role.WEREWOLF || !it.role.isWolf)
             }
             if (suspects.isEmpty()) continue
             val black = suspects.filter { publicBlack.contains(it.id) }
             val whites = suspects.filter { publicWhite.contains(it.id) }
-            if (black.isNotEmpty()) {
+            if (black.isNotEmpty() && Random.nextInt(100) < 70) {
                 val t = black.random()
                 talks.add(Talk(p.id,
                     "${t.pname} は人狼と占われてる！今日は ${t.pname} に投票しよう！",
@@ -247,7 +330,10 @@ class GameEngine {
             } else {
                 val notWhite = suspects.filter { !publicWhite.contains(it.id) }
                 val pool = if (notWhite.isNotEmpty()) notWhite else suspects
-                val t = pool.random()
+                // 占い師フェーズで怪しいと言われた人は、みんなが疑いやすい
+                val boosted = pool.filter { suspicionBoost.contains(it.id) }
+                val t = if (boosted.isNotEmpty() && Random.nextInt(100) < 65) boosted.random()
+                        else pool.random()
                 talks.add(Talk(p.id, suspectTpl.random().format(t.pname), t.id, true))
             }
         }
@@ -268,7 +354,7 @@ class GameEngine {
             val pick = if (black.isNotEmpty()) {
                 black.random()
             } else {
-                val notWhite = cands.filter { !publicWhite.contains(it.id) && it.id != claimedSeerId }
+                val notWhite = cands.filter { !publicWhite.contains(it.id) && !seerClaimants.contains(it.id) }
                 if (notWhite.isNotEmpty()) notWhite.random() else cands.random()
             }
             votes[v.id] = pick.id
@@ -281,24 +367,6 @@ class GameEngine {
         executed.alive = false
         lastExecuted = executed
         return executed
-    }
-
-    fun publishHumanSeer(): List<Talk> {
-        claimedSeerId = humanId
-        val msgs = ArrayList<Talk>()
-        for ((id, isWolf) in humanSeerResults) {
-            if (publishedSeer.add(id)) {
-                val nm = players[id].pname
-                if (isWolf) {
-                    publicBlack.add(id)
-                    msgs.add(Talk(humanId, "占いCO！ $nm は 人狼 だ！", id, true))
-                } else {
-                    publicWhite.add(id)
-                    msgs.add(Talk(humanId, "占いCO。$nm は 人狼ではない", id, false))
-                }
-            }
-        }
-        return msgs
     }
 
     fun publishHumanMedium(): List<Talk> {
@@ -985,8 +1053,9 @@ class MainActivity : Activity() {
                 e.publicWhite.joinToString("、") { e.players[it].pname },
                 13f, true, Color.parseColor("#A8E6A1")))
         }
-        if (e.claimedSeerId >= 0) {
-            outer.addView(tv("【占いCO中】${e.players[e.claimedSeerId].pname}",
+        if (e.seerClaimants.isNotEmpty()) {
+            outer.addView(tv("【占い師CO中】" +
+                e.seerClaimants.joinToString("、") { e.players[it].pname },
                 13f, false, Color.parseColor("#C9B6FF")))
         }
         val dead = e.players.filter { !it.alive }
@@ -1052,19 +1121,30 @@ class MainActivity : Activity() {
         cd.addView(space(dp(10)))
         cd.addView(tv("【ゲームの流れ】", 15f, true))
         cd.addView(tv(
+            "☀️ 1日目の昼\n" +
+            "・まだ手がかりがないので、みんなの会話は勘だより。\n" +
+            "・投票を行い、最も票が多かった人が処刑されます。", 14f))
+        cd.addView(space(dp(8)))
+        cd.addView(tv(
             "🌙 夜\n" +
-            "・全員目を閉じます。\n" +
-            "・人狼が相談し、襲撃する相手を決めます。\n" +
+            "・人狼が襲撃する相手を決めます。\n" +
             "・占い師が1人を占います。\n" +
             "・狩人が1人を護衛します。\n" +
             "・朝になると、襲撃された人（護衛成功なら0人）が判明します。", 14f))
         cd.addView(space(dp(8)))
         cd.addView(tv(
-            "☀️ 昼\n" +
+            "🔮 占い師フェーズ（2日目の朝から）\n" +
+            "・占い師と主張する人が結果を発表します。\n" +
+            "・人狼のうち1人が偽占い師として名乗り出ることも！\n" +
+            "・偽物は人狼以外を「人狼」と言ったり、本物のマネをしたりします。\n" +
+            "・名乗り出るのは最初だけ。途中から名乗り出ることはできません。\n" +
+            "・占い師が2人いるとき、狩人はどちらかを必ず護衛します。", 14f))
+        cd.addView(space(dp(8)))
+        cd.addView(tv(
+            "💬 昼\n" +
             "・生き残った全員で話し合います。\n" +
-            "・「誰が人狼か」を推理します。\n" +
-            "・投票を行い、最も票が多かった人が処刑されます。\n" +
-            "・処刑後、再び夜になります。", 14f))
+            "・占い師フェーズで怪しいと言われた人は疑われやすくなります。\n" +
+            "・投票 → 処刑 → また夜になります。", 14f))
         cd.addView(space(dp(10)))
         cd.addView(tv("【勝利条件】", 15f, true))
         cd.addView(tv(
@@ -1111,7 +1191,10 @@ class MainActivity : Activity() {
                 15f, true, Color.parseColor("#FF9B9B")))
         }
         cd.addView(space(dp(16)))
-        cd.addView(btn("最初の夜へ", Color.parseColor("#5A4FD8")) { beginNight() })
+        cd.addView(btn("1日目の昼へ", Color.parseColor("#D8703D")) {
+            currentTalks = ArrayList(engine.discussionTalks())
+            showDay()
+        })
         pn.addView(cd)
         setScreen(pn)
     }
@@ -1199,9 +1282,18 @@ class MainActivity : Activity() {
         val cd = card()
         cd.addView(tv("🛡️ 夜 - 護衛", 20f, true, Color.parseColor("#A8D8FF")))
         cd.addView(space(dp(8)))
-        cd.addView(tv("人狼の襲撃から守る相手を選んでください（自分以外）"))
+        val claimAlive = engine.seerClaimants.map { engine.players[it] }
+            .filter { it.alive && it.id != engine.humanId }
+        val cands: List<Player>
+        if (claimAlive.size >= 2) {
+            cd.addView(tv("占い師が2人名乗り出ています。どちらかを必ず護衛してください。", 14f, true,
+                Color.parseColor("#FFE28A")))
+            cands = claimAlive
+        } else {
+            cd.addView(tv("人狼の襲撃から守る相手を選んでください（自分以外）"))
+            cands = engine.alive().filter { it.id != engine.humanId }
+        }
         cd.addView(space(dp(10)))
-        val cands = engine.alive().filter { it.id != engine.humanId }
         cd.addView(charGrid(cands, 80, 3) { t -> finishNight(null, null, t) })
         pn.addView(cd)
         addNightVictims(pn)
@@ -1275,11 +1367,83 @@ class MainActivity : Activity() {
         if (w != 0) {
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
         } else {
-            cd.addView(btn("昼の話し合いへ") {
-                currentTalks = ArrayList(e.discussionTalks())
-                showDay()
-            })
+            cd.addView(btn("🔮 占い師フェーズへ") { showSeerPhase() })
         }
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    // ---------- 占い師フェーズ（2日目の朝から・昼の前） ----------
+
+    private fun showSeerPhase() {
+        val e = engine
+        val h = e.human()
+
+        // 最初のフェーズで、あなたが生きている占い師なら「名乗り出るか」選べる
+        if (!e.seerPhaseStarted && h.alive && h.role == Role.SEER) {
+            val pn = panel()
+            val cd = card()
+            cd.addView(tv("🔮 占い師フェーズ", 20f, true, Color.parseColor("#C9B6FF")))
+            cd.addView(space(dp(8)))
+            cd.addView(tv("あなたは占い師です。名乗り出ますか？\n" +
+                "・名乗り出ると結果を発表できますが、人狼に狙われやすくなります。\n" +
+                "・ここで名乗り出ないと、以後名乗り出ることはできません。", 14f))
+            cd.addView(space(dp(14)))
+            cd.addView(btn("🔮 名乗り出る（CO）", Color.parseColor("#7A4FD8")) {
+                e.ensureSeerPhase(true)
+                renderSeerPhase()
+            })
+            cd.addView(space(dp(8)))
+            cd.addView(btn("🤫 名乗り出ない（隠れる）") {
+                e.ensureSeerPhase(false)
+                renderSeerPhase()
+            })
+            pn.addView(cd)
+            setScreen(pn)
+            return
+        }
+
+        e.ensureSeerPhase(false)
+        renderSeerPhase()
+    }
+
+    private fun renderSeerPhase() {
+        val e = engine
+        val talks = e.seerPhaseTalks()
+        // フェーズの発言は昼の会話とまとめにも引き継ぐ
+        currentTalks = ArrayList(talks)
+
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🔮 占い師フェーズ", 20f, true, Color.parseColor("#C9B6FF")))
+        cd.addView(space(dp(6)))
+
+        val claimAlive = e.seerClaimants.map { e.players[it] }.filter { it.alive }
+        if (claimAlive.isEmpty()) {
+            cd.addView(tv("……誰も占い師と名乗り出なかった。", 15f))
+        } else {
+            cd.addView(tv("占い師と主張しているのは ${claimAlive.size}人：", 14f))
+            cd.addView(charGrid(claimAlive, 72, 3, null))
+            cd.addView(space(dp(8)))
+            if (talks.isEmpty()) {
+                cd.addView(tv("今日は新しい発表はなかった。", 14f))
+            } else {
+                for (t in talks) {
+                    cd.addView(talkBubble(t))
+                    cd.addView(space(dp(8)))
+                }
+            }
+            if (claimAlive.size >= 2) {
+                cd.addView(tv("⚠️ 占い師が2人…どちらかは偽物（人狼）だ！", 13f, true,
+                    Color.parseColor("#FF9B9B")))
+            }
+        }
+
+        cd.addView(space(dp(14)))
+        cd.addView(btn("昼の話し合いへ") {
+            currentTalks.addAll(e.discussionTalks())
+            showDay()
+        })
         pn.addView(cd)
         setScreen(pn)
     }
@@ -1308,7 +1472,7 @@ class MainActivity : Activity() {
             cd.addView(space(dp(8)))
         }
 
-        // 占い師（人間）の手元の結果とCO
+        // 占い師（人間）の手元の結果（COは朝の占い師フェーズでのみ可能）
         if (h.alive && h.role == Role.SEER && e.humanSeerResults.isNotEmpty()) {
             cd.addView(space(dp(6)))
             cd.addView(tv("【あなたの占い結果（非公開分含む）】", 13f, true, Color.parseColor("#C9B6FF")))
@@ -1317,13 +1481,6 @@ class MainActivity : Activity() {
                 cd.addView(tv("・${e.players[id].pname}: " +
                     (if (isw) "人狼" else "人狼ではない") + mark, 13f, false,
                     Color.parseColor("#C9B6FF")))
-            }
-            if (e.humanSeerResults.keys.any { !e.publishedSeer.contains(it) }) {
-                cd.addView(space(dp(6)))
-                cd.addView(btn("🔮 占い結果を公開する（CO）", Color.parseColor("#7A4FD8")) {
-                    currentTalks.addAll(e.publishHumanSeer())
-                    showDay()
-                })
             }
         }
 
