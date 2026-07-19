@@ -5,73 +5,93 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 左耳（大きくてふわふわ） -->
+    <!-- 月 -->
     <path
-        android:fillColor="#A8B0BC"
-        android:pathData="M33,46m-12,0a12,12 0,1 1,24 0a12,12 0,1 1,-24 0" />
-    <!-- 右耳 -->
+        android:fillColor="#33FFF3C4"
+        android:pathData="M78,32m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0" />
     <path
-        android:fillColor="#A8B0BC"
-        android:pathData="M75,46m-12,0a12,12 0,1 1,24 0a12,12 0,1 1,-24 0" />
-    <!-- 左耳の内側（ピンク） -->
-    <path
-        android:fillColor="#E8B0C4"
-        android:pathData="M33,46m-6.5,0a6.5,6.5 0,1 1,13 0a6.5,6.5 0,1 1,-13 0" />
-    <!-- 右耳の内側 -->
-    <path
-        android:fillColor="#E8B0C4"
-        android:pathData="M75,46m-6.5,0a6.5,6.5 0,1 1,13 0a6.5,6.5 0,1 1,-13 0" />
+        android:fillColor="#FFF3C4"
+        android:pathData="M78,32m-7.5,0a7.5,7.5 0,1 1,15 0a7.5,7.5 0,1 1,-15 0" />
 
-    <!-- 顔（丸） -->
-    <path
-        android:fillColor="#B4BCC8"
-        android:pathData="M54,58m-19,0a19,19 0,1 1,38 0a19,19 0,1 1,-38 0" />
-
-    <!-- 左目 -->
-    <path
-        android:fillColor="#2A2A33"
-        android:pathData="M46,54.5m-2.6,0a2.6,3.2 0,1 1,5.2 0a2.6,3.2 0,1 1,-5.2 0" />
-    <!-- 右目 -->
-    <path
-        android:fillColor="#2A2A33"
-        android:pathData="M62,54.5m-2.6,0a2.6,3.2 0,1 1,5.2 0a2.6,3.2 0,1 1,-5.2 0" />
-    <!-- 目のハイライト -->
+    <!-- 星 -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M45.2,53.4m-0.9,0a0.9,0.9 0,1 1,1.8 0a0.9,0.9 0,1 1,-1.8 0" />
+        android:pathData="M31,30 L32.2,33 L35.2,34.2 L32.2,35.4 L31,38.4 L29.8,35.4 L26.8,34.2 L29.8,33 Z" />
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M61.2,53.4m-0.9,0a0.9,0.9 0,1 1,1.8 0a0.9,0.9 0,1 1,-1.8 0" />
+        android:fillColor="#CCFFFFFF"
+        android:pathData="M45,24 L45.8,26 L47.8,26.8 L45.8,27.6 L45,29.6 L44.2,27.6 L42.2,26.8 L44.2,26 Z" />
+    <path
+        android:fillColor="#99FFFFFF"
+        android:pathData="M24,48 L24.7,49.7 L26.4,50.4 L24.7,51.1 L24,52.8 L23.3,51.1 L21.6,50.4 L23.3,49.7 Z" />
 
-    <!-- 大きな鼻（コアラの特徴） -->
+    <!-- 窓から漏れる光 -->
     <path
-        android:fillColor="#4A4A52"
-        android:pathData="M54,62.5m-4.6,0a4.6,6 0,1 1,9.2 0a4.6,6 0,1 1,-9.2 0" />
-    <!-- 鼻のハイライト -->
+        android:fillColor="#33FFD97A"
+        android:pathData="M40,64 L30,88 L52,88 Z" />
     <path
-        android:fillColor="#7A7A85"
-        android:pathData="M51.8,59.5m-1.4,0a1.4,1.9 0,1 1,2.8 0a1.4,1.9 0,1 1,-2.8 0" />
+        android:fillColor="#33FFD97A"
+        android:pathData="M66,64 L78,88 L56,88 Z" />
 
-    <!-- ほっぺ -->
+    <!-- 煙突 -->
     <path
-        android:fillColor="#4DE89AA8"
-        android:pathData="M41,63m-3.2,0a3.2,2.3 0,1 1,6.4 0a3.2,2.3 0,1 1,-6.4 0" />
+        android:fillColor="#6B4A3A"
+        android:pathData="M66,34 L73,34 L73,50 L66,50 Z" />
     <path
-        android:fillColor="#4DE89AA8"
-        android:pathData="M67,63m-3.2,0a3.2,2.3 0,1 1,6.4 0a3.2,2.3 0,1 1,-6.4 0" />
+        android:fillColor="#8A6250"
+        android:pathData="M64.5,32 L74.5,32 L74.5,36 L64.5,36 Z" />
 
-    <!-- 口 -->
+    <!-- 屋根 -->
     <path
-        android:strokeColor="#4A4A52"
-        android:strokeWidth="1.3"
+        android:fillColor="#8C4A3F"
+        android:pathData="M54,30 L84,54 L24,54 Z" />
+    <path
+        android:fillColor="#A85B4C"
+        android:pathData="M54,30 L84,54 L54,54 Z" />
+
+    <!-- 家の壁 -->
+    <path
+        android:fillColor="#E8DCC4"
+        android:pathData="M32,54 L76,54 L76,84 L32,84 Z" />
+    <path
+        android:fillColor="#D2C4A8"
+        android:pathData="M54,54 L76,54 L76,84 L54,84 Z" />
+
+    <!-- 左の窓（灯りがついている） -->
+    <path
+        android:fillColor="#4DFFD97A"
+        android:pathData="M40.5,65.5m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0" />
+    <path
+        android:fillColor="#FFD450"
+        android:pathData="M34,60 L47,60 L47,71 L34,71 Z" />
+    <path
+        android:strokeColor="#6B4A3A"
+        android:strokeWidth="1.6"
         android:fillColor="#00000000"
-        android:pathData="M54,68.5 Q51.5,71 49,69.5 M54,68.5 Q56.5,71 59,69.5" />
+        android:pathData="M34,60 L47,60 L47,71 L34,71 Z M40.5,60 L40.5,71 M34,65.5 L47,65.5" />
 
-    <!-- ユーカリの葉 -->
+    <!-- 右の窓（灯りがついている） -->
     <path
-        android:fillColor="#6FA060"
-        android:pathData="M70,74 Q76,70 80,74 Q76,79 70,74 Z" />
+        android:fillColor="#4DFFD97A"
+        android:pathData="M67.5,65.5m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0" />
     <path
-        android:fillColor="#87B877"
-        android:pathData="M73,79 Q79,76 82,80 Q77,84 73,79 Z" />
+        android:fillColor="#FFD450"
+        android:pathData="M61,60 L74,60 L74,71 L61,71 Z" />
+    <path
+        android:strokeColor="#6B4A3A"
+        android:strokeWidth="1.6"
+        android:fillColor="#00000000"
+        android:pathData="M61,60 L74,60 L74,71 L61,71 Z M67.5,60 L67.5,71 M61,65.5 L74,65.5" />
+
+    <!-- ドア -->
+    <path
+        android:fillColor="#6B4A3A"
+        android:pathData="M49,70 L59,70 L59,84 L49,84 Z" />
+    <path
+        android:fillColor="#FFD450"
+        android:pathData="M57,77.5m-1.2,0a1.2,1.2 0,1 1,2.4 0a1.2,1.2 0,1 1,-2.4 0" />
+
+    <!-- 地面 -->
+    <path
+        android:fillColor="#2E3A66"
+        android:pathData="M18,84 L90,84 L90,88 L18,88 Z" />
 </vector>

@@ -1,4 +1,4 @@
-# どうぶつ人狼（JinrouApp）仕様書 — v5 / versionCode 1 時点
+# どうぶつ人狼（JinrouApp）仕様書 — v6 / versionCode 2 時点
 
 別のチャットで開発を再開するときの引き継ぎ資料。
 **このSPEC.md と `app/src/main/java/com/sekiguchi/jinrou/MainActivity.kt` の全文を渡せば、同じ精度で続きができます。**
@@ -171,10 +171,10 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 金 `#FFE28A` / 赤 `#FF9B9B` / 緑 `#A8E6A1` / 紫 `#C9B6FF` / 水色 `#A8D8FF` / 青ボタン `#3D6BD8` / オレンジ `#D8703D` / 夜紫 `#5A4FD8` / 緑ボタン `#3D9E6B`
 
 ### アイコン
-- `res/drawable/ic_launcher_foreground.xml`: **コアラの顔**（ふわふわ耳＋ピンクの内側、大きな鼻、ユーカリの葉）のベクター
-- `res/values/ic_launcher_background.xml`: `#CDE8D5`（淡い緑）
+- `res/drawable/ic_launcher_foreground.xml`: **夜の一軒家**（月・星・煙突・窓に灯り・窓から漏れる光）のベクター
+- `res/values/ic_launcher_background.xml`: `#1B2447`（夜の紺）
 - `res/mipmap-anydpi-v26/ic_launcher.xml` / `ic_launcher_round.xml`: アダプティブアイコン
-- ※ 狼アイコンは審査・配布時の印象を考えて不採用にした経緯あり
+- ※ 変遷: 狼の顔（v3）→ 配布時の印象を考えて不採用 → コアラの顔（v5）→ 夜の一軒家（v6）
 
 ---
 
@@ -186,6 +186,7 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 | v3 | 1日目を昼開始に変更。占い師フェーズ（偽占い師・名乗り出制）を追加。狼アイコン追加 |
 | v4 | やられた画面に3択（観戦/人狼予想して観戦/終了）。予想の答え合わせ画面。全選択画面を固定3×3配置に。村の状況カード |
 | v5 | パンダ→コアラに変更、アイコンもコアラ化。自由会話＋説得システム。名探偵システム（村人側の勝率改善） |
+| v6 | アイコンを「夜の一軒家（窓に灯り）」に変更。SPEC.mdをリポジトリに追加 |
 
 ## 5. 次にやるなら（未実装のアイデア）
 - 難易度選択（CPUの説得採用率・名探偵の発生条件を変える）
