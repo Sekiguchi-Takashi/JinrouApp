@@ -1,4 +1,4 @@
-# どうぶつ人狼（JinrouApp）仕様書 — v7 / versionCode 3 時点
+# どうぶつ人狼（JinrouApp）仕様書 — v8 / versionCode 4 時点
 
 別のチャットで開発を再開するときの引き継ぎ資料。
 **このSPEC.md と `app/src/main/java/com/sekiguchi/jinrou/MainActivity.kt` の全文を渡せば、同じ精度で続きができます。**
@@ -72,7 +72,7 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 ### ゲームの流れ（1日目は昼から始まる）
 ```
 タイトル → ルール確認 → 役職確認
-  → 【1日目】自由会話 → 疑いの話し合い → 投票 → 開票処刑
+  → 【1日目】自由会話 → 疑いの話し合い →（処刑なし）→ 夜
   → 夜（人狼襲撃 / 占い / 護衛）
   → 朝（犠牲者判明・霊能結果）
   → 【2日目以降】占い師フェーズ → 自由会話 → 話し合い → 投票 → 開票
@@ -166,7 +166,7 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 | `CharacterView` | CharacterArtをアニメ表示するView。`emotion`(0通常/1喜び/2悲しみ)を設定。`postOnAnimation`で位相を進め、アイドル=呼吸、喜び=跳ね、悲しみ=うつむき。`onAttachedToWindow`で自動開始・`onDetached`で停止 |
 | `SummaryView` | まとめの相関図（円形配置＋矢印＋🐺） |
 | `TownView` | 背景（昼夜切替、空グラデ、月/太陽、丘、石畳、DQ風の家3軒） |
-| `MainActivity` | UIヘルパー（`dp` `setScreen` `panel` `card` `tv` `btn` `space` `charCell` `charGrid` `charGridFixed` `statusCard` `talkBubble`）→ 各画面関数 |
+| `MainActivity` | UIヘルパー（`dp` `setScreen` `panel` `card` `tv` `btn` `space` `charCell` `charGrid` `charGridFixed` `statusCard` `talkBubble` `roleHighlightTv`）→ 各画面関数 |
 
 ### Kotlin上の注意点
 - `Button.transformationMethod = null` を使う（`isAllCaps` プロパティは使えない）
@@ -194,6 +194,7 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 | v4 | やられた画面に3択（観戦/人狼予想して観戦/終了）。予想の答え合わせ画面。全選択画面を固定3×3配置に。村の状況カード |
 | v5 | パンダ→コアラに変更、アイコンもコアラ化。自由会話＋説得システム。名探偵システム（村人側の勝率改善） |
 | v6 | アイコンを「夜の一軒家（窓に灯り）」に変更。SPEC.mdをリポジトリに追加 |
+| v8 | 喜びの跳ねをゆっくりに調整。1日目は処刑（投票）を廃止＝情報がない初日に処刑されない。会話中の役職ワード（人狼/占い師/霊能/狩人/村人/名探偵）を役職別の暗い色＋太字で強調（`roleHighlightTv`） |
 | v7 | キャラのアニメーション（アイドルの呼吸・喜び跳ね・悲しみうつむき、スカッシュ&ストレッチで立体感、目/口/涙/音符の表情差分）。起動時イントロ動画（`res/raw/intro.mp4`・初回のみ、タップスキップ可）。2周目以降は動画を経由せずタイトルへ |
 
 ## 5. 次にやるなら（未実装のアイデア）

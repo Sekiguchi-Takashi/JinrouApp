@@ -617,7 +617,7 @@ object CharacterArt {
         // リスのしっぽ（喜ぶと揺れる）
         if (a == Animal.SQUIRREL) {
             c.save()
-            if (emotion == 1) c.rotate(kotlin.math.sin(t * 6.2832f) * 12f, cx + hr, hy + hr)
+            if (emotion == 1) c.rotate(kotlin.math.sin(t * 3.14f) * 12f, cx + hr, hy + hr)
             p.color = Color.parseColor("#C1683A")
             val tail = RectF(cx + hr * 0.5f, hy - hr * 0.4f, cx + hr * 1.7f, hy + hr * 1.8f)
             c.drawOval(tail, p)
@@ -913,10 +913,10 @@ class CharacterView(context: Context, private val animal: Animal, private var al
         var hop = 0f
         var lean = 0f
         when (emotion) {
-            1 -> {  // 喜び：ぴょんぴょん跳ねる
-                val j = kotlin.math.abs(kotlin.math.sin(phase * two * 1.6f))
+            1 -> {  // 喜び：ゆっくりぴょんぴょん跳ねる
+                val j = kotlin.math.abs(kotlin.math.sin(phase * two * 0.8f))
                 hop = j * s * 0.14f
-                lean = kotlin.math.sin(phase * two * 1.6f) * 4f
+                lean = kotlin.math.sin(phase * two * 0.8f) * 4f
             }
             2 -> {  // 悲しみ：うつむいてゆっくり揺れる
                 hop = -s * 0.02f + kotlin.math.sin(phase * two * 0.4f) * s * 0.01f
@@ -1424,7 +1424,7 @@ class MainActivity : Activity() {
                 e.seerPhaseTalks()
                 if (e.winner() != 0) break
                 e.discussionTalks()
-                e.runVote(null)
+                if (e.dayCount > 1) e.runVote(null)   // 1日目は処刑なし
                 atNight = true
             }
         }
@@ -1628,6 +1628,38 @@ class MainActivity : Activity() {
 
     // ---------- 昼の会話：吹き出し ----------
 
+    // 会話文中の役職ワードを、役職ごとの暗い色＋太字で強調
+    private fun roleHighlightTv(text: String): TextView {
+        val base = Color.parseColor("#22283C")
+        val tvw = TextView(this)
+        tvw.textSize = 14f
+        tvw.setTextColor(base)
+        // 役職語 → 濃くて視認性の高い色
+        val roleColors = listOf(
+            "人狼" to Color.parseColor("#8E1B1B"),   // 濃い赤
+            "占い師" to Color.parseColor("#3A2E7A"), // 濃い紫紺
+            "占い" to Color.parseColor("#3A2E7A"),
+            "霊能" to Color.parseColor("#155E63"),   // 濃い青緑
+            "狩人" to Color.parseColor("#1F5A2E"),   // 濃い緑
+            "村人" to Color.parseColor("#6B4A1A"),   // 濃い茶
+            "名探偵" to Color.parseColor("#0F3A63")  // 濃い藍
+        )
+        val sp = android.text.SpannableString(text)
+        for ((word, col) in roleColors) {
+            var from = text.indexOf(word)
+            while (from >= 0) {
+                val to = from + word.length
+                sp.setSpan(android.text.style.ForegroundColorSpan(col), from, to,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sp.setSpan(android.text.style.StyleSpan(Typeface.BOLD), from, to,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                from = text.indexOf(word, to)
+            }
+        }
+        tvw.text = sp
+        return tvw
+    }
+
     private fun talkBubble(t: Talk, onTap: (() -> Unit)? = null): LinearLayout {
         val sp = engine.players[t.speakerId]
         val isYou = t.speakerId == engine.humanId
@@ -1665,7 +1697,7 @@ class MainActivity : Activity() {
         val nm = tv(nameText, 15f, true,
             if (isYou) Color.parseColor("#2E7A4E") else Color.parseColor("#B05A2A"))
         bubble.addView(nm)
-        bubble.addView(tv(t.text, 14f, false, Color.parseColor("#22283C")))
+        bubble.addView(roleHighlightTv(t.text))
 
         val lp = LinearLayout.LayoutParams(0, -2, 1f)
         lp.setMargins(dp(8), 0, 0, 0)
@@ -2186,7 +2218,13 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(14)))
-        if (h.alive) {
+        if (e.dayCount == 1) {
+            // 1日目は情報がないため処刑なし。話し合いだけして夜へ
+            cd.addView(tv("🌙 1日目は手がかりがないので、今夜は投票（処刑）を行いません。", 13f, true,
+                Color.parseColor("#BFD0FF")))
+            cd.addView(space(dp(8)))
+            cd.addView(btn("夜になる", Color.parseColor("#5A4FD8")) { beginNight() })
+        } else if (h.alive) {
             cd.addView(btn("投票へ進む", Color.parseColor("#D8703D")) { showVote() })
         } else {
             cd.addView(btn("開票へ（観戦）") {
