@@ -1,4 +1,4 @@
-# どうぶつ人狼（JinrouApp）仕様書 — v6 / versionCode 2 時点
+# どうぶつ人狼（JinrouApp）仕様書 — v7 / versionCode 3 時点
 
 別のチャットで開発を再開するときの引き継ぎ資料。
 **このSPEC.md と `app/src/main/java/com/sekiguchi/jinrou/MainActivity.kt` の全文を渡せば、同じ精度で続きができます。**
@@ -13,7 +13,7 @@
 - **Gradle wrapperなし**（`gradlew` を置かない。Actionsは `gradle assembleDebug --no-daemon` を直接実行）
 - **外部依存ゼロ**（`app/build.gradle` に dependencies ブロックを持たない）
 - **XMLレイアウトなし**。UIは全てKotlinのプログラマティック生成。res配下はアイコンのみ
-- **画像アセットゼロ**。9体のキャラも背景もすべて `Canvas` の手描き
+- **画像アセットは動画1本のみ**（`res/raw/intro.mp4`）。9体のキャラも背景もすべて `Canvas` の手描き
 - **`app/debug.keystore` をリポジトリに同梱**し、debug署名を固定する
   → 常に同じ署名になるので、アンインストール不要で上書きインストールできる
   → **これが無いとActionsが毎回鍵を自動生成し、更新のたびにインストール失敗する**（v2で実際に発生）
@@ -149,14 +149,21 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 
 ---
 
+### 🎬 起動時イントロ動画（`showSplash`）
+- `onCreate` → `showSplash()`。`VideoView` で `android.resource://$packageName/raw/intro` を再生
+- 再生完了・エラー・タップのいずれでも `showTitle()` へ（`done`フラグで二重遷移防止）
+- **初回起動時のみ**。ゲーム内の「もう一度あそぶ」「タイトルへ」はすべて `showTitle()`/`startGame()` に直行し、動画は経由しない（要件どおり2周目以降はトップにループ）
+- `app/build.gradle` に `androidResources { noCompress 'mp4' }` を設定（VideoViewがapk内リソースをシークできるように）
+- 動画は 720px 幅・音声なし・H.264/CRF28 に圧縮して同梱（元14MB→約0.6MB）。差し替え時も同様に圧縮すること
+
 ## 3. コード構成（MainActivity.kt 単一ファイル・上から順）
 
 | 区分 | 内容 |
 |---|---|
 | データ定義 | `enum Role`（jp/isWolf）, `enum Animal`（jp）, `class Player`(id/pname/animal/role/alive), `class Talk`(speakerId/text/targetId/suspect) |
 | `GameEngine` | 状態フィールド → `setup()` / `winner()` / `resolveNight()` / `ensureSeerPhase()` / `seerPhaseTalks()` / `freeTalks()` / `persuade()` / `discussionTalks()` / `runVote()` / `publishHumanMedium()`。`companion object { NAMES, N=9 }` |
-| `CharacterArt` | 動物9種のCanvas描画（`draw` / `drawEars` / 色ヘルパー）。死亡時はグレーベール＋×目 |
-| `CharacterView` | CharacterArtを描くだけのView |
+| `CharacterArt` | 動物9種のCanvas描画。`draw(c,a,cx,cy,size,alive, emotion=0,t=0,hop=0,lean=0)`。emotionで目/口/涙/音符が変化、hop/leanとスカッシュ&ストレッチ(`c.scale`)で立体的な動き。save/restoreは2対2で対応。死亡時はグレーベール＋×目 |
+| `CharacterView` | CharacterArtをアニメ表示するView。`emotion`(0通常/1喜び/2悲しみ)を設定。`postOnAnimation`で位相を進め、アイドル=呼吸、喜び=跳ね、悲しみ=うつむき。`onAttachedToWindow`で自動開始・`onDetached`で停止 |
 | `SummaryView` | まとめの相関図（円形配置＋矢印＋🐺） |
 | `TownView` | 背景（昼夜切替、空グラデ、月/太陽、丘、石畳、DQ風の家3軒） |
 | `MainActivity` | UIヘルパー（`dp` `setScreen` `panel` `card` `tv` `btn` `space` `charCell` `charGrid` `charGridFixed` `statusCard` `talkBubble`）→ 各画面関数 |
@@ -187,6 +194,7 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 | v4 | やられた画面に3択（観戦/人狼予想して観戦/終了）。予想の答え合わせ画面。全選択画面を固定3×3配置に。村の状況カード |
 | v5 | パンダ→コアラに変更、アイコンもコアラ化。自由会話＋説得システム。名探偵システム（村人側の勝率改善） |
 | v6 | アイコンを「夜の一軒家（窓に灯り）」に変更。SPEC.mdをリポジトリに追加 |
+| v7 | キャラのアニメーション（アイドルの呼吸・喜び跳ね・悲しみうつむき、スカッシュ&ストレッチで立体感、目/口/涙/音符の表情差分）。起動時イントロ動画（`res/raw/intro.mp4`・初回のみ、タップスキップ可）。2周目以降は動画を経由せずタイトルへ |
 
 ## 5. 次にやるなら（未実装のアイデア）
 - 難易度選択（CPUの説得採用率・名探偵の発生条件を変える）

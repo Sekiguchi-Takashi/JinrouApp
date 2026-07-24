@@ -19,6 +19,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.net.Uri
+import android.widget.VideoView
 import kotlin.random.Random
 
 // =====================================================
@@ -554,6 +556,7 @@ object CharacterArt {
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
 
     private fun bodyColor(a: Animal) = when (a) {
         Animal.RABBIT -> Color.parseColor("#F7F3EC")
@@ -593,15 +596,28 @@ object CharacterArt {
         return Color.rgb(l(Color.red(c0)), l(Color.green(c0)), l(Color.blue(c0)))
     }
 
-    fun draw(c: Canvas, a: Animal, cx: Float, cy: Float, size: Float, alive: Boolean) {
+    // emotion: 0=通常 1=喜び 2=悲しみ / t: アニメ位相(0..1) / hop: 上下弾み / lean: 左右傾き
+    fun draw(c: Canvas, a: Animal, cx0: Float, cy0: Float, size: Float, alive: Boolean,
+             emotion: Int = 0, t: Float = 0f, hop: Float = 0f, lean: Float = 0f) {
+        val cx = cx0
+        val cy = cy0 - hop
         val hr = size * 0.27f
         val hy = cy - size * 0.06f
         val col = bodyColor(a)
         val dark = darken(col)
         p.style = Paint.Style.FILL
 
-        // リスのしっぽ（後ろに描く）
+        c.save()
+        // 立体的な動き：傾き＋弾みに合わせた横方向のスカッシュ＆ストレッチ
+        c.rotate(lean, cx, cy)
+        val sy = 1f + hop / (size * 0.9f) * 0.6f    // 上昇時は縦に伸び
+        val sx = 2f - sy                             // 横に縮む（体積保存風）
+        c.scale(sx.coerceIn(0.85f, 1.15f), sy.coerceIn(0.85f, 1.2f), cx, hy + hr)
+
+        // リスのしっぽ（喜ぶと揺れる）
         if (a == Animal.SQUIRREL) {
+            c.save()
+            if (emotion == 1) c.rotate(kotlin.math.sin(t * 6.2832f) * 12f, cx + hr, hy + hr)
             p.color = Color.parseColor("#C1683A")
             val tail = RectF(cx + hr * 0.5f, hy - hr * 0.4f, cx + hr * 1.7f, hy + hr * 1.8f)
             c.drawOval(tail, p)
@@ -609,6 +625,7 @@ object CharacterArt {
             c.drawOval(
                 RectF(tail.left + hr * 0.25f, tail.top + hr * 0.3f,
                       tail.right - hr * 0.15f, tail.bottom - hr * 0.3f), p)
+            c.restore()
         }
 
         drawEars(c, a, cx, hy, hr, col, dark)
@@ -641,14 +658,42 @@ object CharacterArt {
             c.drawOval(RectF(cx - hr * 0.5f, hy + hr * 0.05f, cx + hr * 0.5f, hy + hr * 0.8f), p)
         }
 
-        // アニメ風の大きな目
+        // アニメ風の大きな目（感情で形が変わる）
         val eyeY = hy - hr * 0.05f
         val eyeDX = hr * 0.42f
         val ew = hr * 0.30f
         val eh = hr * 0.42f
         for (sgn in intArrayOf(-1, 1)) {
             val ex = cx + sgn * eyeDX
-            if (alive) {
+            if (!alive) {
+                stroke.color = Color.DKGRAY
+                stroke.strokeWidth = hr * 0.09f
+                c.drawLine(ex - ew, eyeY - eh * 0.6f, ex + ew, eyeY + eh * 0.6f, stroke)
+                c.drawLine(ex + ew, eyeY - eh * 0.6f, ex - ew, eyeY + eh * 0.6f, stroke)
+            } else if (emotion == 1) {
+                // 喜び：^ 形のにっこり目
+                stroke.color = Color.parseColor("#3A2A28")
+                stroke.strokeWidth = hr * 0.11f
+                stroke.strokeCap = Paint.Cap.ROUND
+                val arc = RectF(ex - ew, eyeY - eh * 0.2f, ex + ew, eyeY + eh * 0.8f)
+                c.drawArc(arc, 200f, 140f, false, stroke)
+            } else if (emotion == 2) {
+                // 悲しみ：小さめの目＋下がり眉＋涙
+                p.color = Color.WHITE
+                c.drawOval(RectF(ex - ew, eyeY - eh * 0.7f, ex + ew, eyeY + eh * 0.9f), p)
+                p.color = irisColor(a)
+                c.drawOval(RectF(ex - ew * 0.8f, eyeY - eh * 0.2f, ex + ew * 0.8f, eyeY + eh * 0.85f), p)
+                p.color = Color.BLACK
+                c.drawOval(RectF(ex - ew * 0.42f, eyeY + eh * 0.1f, ex + ew * 0.42f, eyeY + eh * 0.7f), p)
+                stroke.color = Color.parseColor("#3A2A28")
+                stroke.strokeWidth = hr * 0.07f
+                stroke.strokeCap = Paint.Cap.ROUND
+                c.drawLine(ex - ew * 1.1f, eyeY - eh * 0.7f, ex + ew * 0.2f, eyeY - eh * 1.05f, stroke)
+                // 涙（位相で落ちる）
+                p.color = Color.parseColor("#8FD0FF")
+                val tearY = eyeY + eh * 0.9f + (t % 1f) * hr * 0.7f
+                c.drawCircle(ex + sgn * ew * 0.3f, tearY, ew * 0.28f, p)
+            } else {
                 p.color = Color.WHITE
                 c.drawOval(RectF(ex - ew, eyeY - eh, ex + ew, eyeY + eh), p)
                 p.color = irisColor(a)
@@ -658,13 +703,9 @@ object CharacterArt {
                 p.color = Color.WHITE
                 c.drawCircle(ex - ew * 0.25f, eyeY - eh * 0.3f, ew * 0.24f, p)
                 c.drawCircle(ex + ew * 0.3f, eyeY + eh * 0.25f, ew * 0.12f, p)
-            } else {
-                stroke.color = Color.DKGRAY
-                stroke.strokeWidth = hr * 0.09f
-                c.drawLine(ex - ew, eyeY - eh * 0.6f, ex + ew, eyeY + eh * 0.6f, stroke)
-                c.drawLine(ex + ew, eyeY - eh * 0.6f, ex - ew, eyeY + eh * 0.6f, stroke)
             }
         }
+        stroke.strokeCap = Paint.Cap.BUTT
 
         // 鼻と口
         if (a == Animal.KOALA) {
@@ -691,14 +732,31 @@ object CharacterArt {
             stroke.color = Color.parseColor("#5B4038")
             stroke.strokeWidth = hr * 0.05f
             c.drawLine(cx, hy + hr * 0.36f, cx, hy + hr * 0.48f, stroke)
-            val m = RectF(cx - hr * 0.22f, hy + hr * 0.32f, cx + hr * 0.22f, hy + hr * 0.62f)
-            c.drawArc(m, 20f, 140f, false, stroke)
+            when (emotion) {
+                1 -> {
+                    // 喜び：大きく開いた口
+                    p.color = Color.parseColor("#B5473F")
+                    c.drawArc(RectF(cx - hr * 0.3f, hy + hr * 0.36f, cx + hr * 0.3f, hy + hr * 0.78f),
+                        0f, 180f, true, p)
+                }
+                2 -> {
+                    // 悲しみ：への字
+                    stroke.strokeWidth = hr * 0.06f
+                    c.drawArc(RectF(cx - hr * 0.22f, hy + hr * 0.52f, cx + hr * 0.22f, hy + hr * 0.82f),
+                        200f, 140f, false, stroke)
+                }
+                else -> {
+                    val m = RectF(cx - hr * 0.22f, hy + hr * 0.32f, cx + hr * 0.22f, hy + hr * 0.62f)
+                    c.drawArc(m, 20f, 140f, false, stroke)
+                }
+            }
         }
 
-        // ほっぺ
-        p.color = Color.argb(90, 255, 120, 140)
-        c.drawOval(RectF(cx - hr * 0.85f, hy + hr * 0.12f, cx - hr * 0.45f, hy + hr * 0.36f), p)
-        c.drawOval(RectF(cx + hr * 0.45f, hy + hr * 0.12f, cx + hr * 0.85f, hy + hr * 0.36f), p)
+        // ほっぺ（喜ぶと赤く大きく）
+        p.color = if (emotion == 1) Color.argb(150, 255, 130, 150) else Color.argb(90, 255, 120, 140)
+        val chW = if (emotion == 1) hr * 0.5f else hr * 0.4f
+        c.drawOval(RectF(cx - hr * 0.9f, hy + hr * 0.12f, cx - hr * 0.9f + chW, hy + hr * 0.40f), p)
+        c.drawOval(RectF(cx + hr * 0.9f - chW, hy + hr * 0.12f, cx + hr * 0.9f, hy + hr * 0.40f), p)
 
         // ねこのヒゲ
         if (a == Animal.CAT) {
@@ -711,6 +769,15 @@ object CharacterArt {
                            cx + sgn * hr * 1.05f, hy + hr * 0.42f, stroke)
             }
         }
+
+        // 喜びの音符 / 悲しみの汗
+        if (alive && emotion == 1) {
+            p.color = Color.parseColor("#FFD450")
+            tp.textSize = hr * 0.7f
+            c.drawText("♪", cx + hr * 1.2f, hy - hr * 0.6f + kotlin.math.sin(t * 6.2832f) * hr * 0.2f, tp)
+        }
+
+        c.restore()
 
         // 死亡時はグレーのベール
         if (!alive) {
@@ -806,11 +873,62 @@ object CharacterArt {
     }
 }
 
-class CharacterView(context: Context, private val animal: Animal, private val aliveFlag: Boolean) : View(context) {
+class CharacterView(context: Context, private val animal: Animal, private var aliveFlag: Boolean)
+    : View(context) {
+
+    // emotion: 0=通常(アイドル) 1=喜び 2=悲しみ
+    var emotion: Int = 0
+        set(v) { field = v; if (v != 0) startAnim() }
+
+    private var phase = 0f
+    private var running = false
+    private val frame = object : Runnable {
+        override fun run() {
+            phase += 0.02f
+            if (phase > 1000f) phase = 0f
+            invalidate()
+            if (running) postOnAnimation(this)
+        }
+    }
+
+    private fun startAnim() {
+        if (!running) { running = true; postOnAnimation(frame) }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        running = true
+        postOnAnimation(frame)
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        running = false
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val s = minOf(width, height).toFloat()
-        CharacterArt.draw(canvas, animal, width / 2f, height / 2f, s, aliveFlag)
+        val two = (Math.PI * 2).toFloat()
+        var hop = 0f
+        var lean = 0f
+        when (emotion) {
+            1 -> {  // 喜び：ぴょんぴょん跳ねる
+                val j = kotlin.math.abs(kotlin.math.sin(phase * two * 1.6f))
+                hop = j * s * 0.14f
+                lean = kotlin.math.sin(phase * two * 1.6f) * 4f
+            }
+            2 -> {  // 悲しみ：うつむいてゆっくり揺れる
+                hop = -s * 0.02f + kotlin.math.sin(phase * two * 0.4f) * s * 0.01f
+                lean = kotlin.math.sin(phase * two * 0.35f) * 3f
+            }
+            else -> {  // アイドル：呼吸のような小さな上下＋わずかな傾き
+                hop = kotlin.math.sin(phase * two * 0.6f) * s * 0.03f
+                lean = kotlin.math.sin(phase * two * 0.45f) * 2f
+            }
+        }
+        CharacterArt.draw(canvas, animal, width / 2f, height / 2f, s, aliveFlag,
+            emotion, phase, hop, lean)
     }
 }
 
@@ -1023,8 +1141,48 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         root = FrameLayout(this)
+        root.setBackgroundColor(Color.parseColor("#0E1430"))
         setContentView(root)
-        showTitle()
+        showSplash()
+    }
+
+    // ---------- スタート画面（イントロ動画・初回のみ） ----------
+
+    private fun showSplash() {
+        val fl = FrameLayout(this)
+        fl.setBackgroundColor(Color.BLACK)
+
+        val video = VideoView(this)
+        val lp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT)
+        lp.gravity = Gravity.CENTER
+        fl.addView(video, lp)
+
+        val uri = Uri.parse("android.resource://$packageName/raw/intro")
+        video.setVideoURI(uri)
+
+        // タップでスキップ
+        val skip = tv("タップでスキップ ▶", 13f, false, Color.parseColor("#CCFFFFFF"))
+        skip.setPadding(dp(16), dp(16), dp(16), dp(16))
+        val slp = FrameLayout.LayoutParams(-2, -2)
+        slp.gravity = Gravity.BOTTOM or Gravity.END
+        fl.addView(skip, slp)
+
+        var done = false
+        val goTitle = {
+            if (!done) {
+                done = true
+                video.stopPlayback()
+                showTitle()
+            }
+        }
+        video.setOnCompletionListener { goTitle() }
+        video.setOnErrorListener { _, _, _ -> goTitle(); true }
+        video.setOnPreparedListener { mp -> mp.isLooping = false; video.start() }
+        fl.setOnClickListener { goTitle() }
+
+        setScreen(fl)
     }
 
     // ---------- UIヘルパー ----------
@@ -1093,12 +1251,29 @@ class MainActivity : Activity() {
         return v
     }
 
+    // その時の局面から各キャラの表情を決める
+    private var moodVictory = 0    // 1=村人勝利 2=人狼勝利（ゲームオーバー時）
+    private fun emotionOf(pl: Player): Int {
+        if (!pl.alive) return 0
+        if (moodVictory == 1) return if (pl.role.isWolf) 2 else 1
+        if (moodVictory == 2) return if (pl.role.isWolf) 1 else 2
+        // 直近で処刑・襲撃された仲間がいると悲しむ
+        val v = engine.lastVictim
+        val ex = engine.lastExecuted
+        if ((v != null && !v.alive) || (ex != null && !ex.alive)) {
+            // 人狼は処刑が自分側でなければ内心うれしい…が表には出さないので通常
+            if (pl.id == engine.humanId) return 0
+        }
+        return 0
+    }
+
     private fun charCell(pl: Player, sizeDp: Int, onClick: ((Player) -> Unit)?): LinearLayout {
         val cell = LinearLayout(this)
         cell.orientation = LinearLayout.VERTICAL
         cell.gravity = Gravity.CENTER
-        cell.addView(CharacterView(this, pl.animal, pl.alive),
-            LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
+        val cv = CharacterView(this, pl.animal, pl.alive)
+        cv.emotion = emotionOf(pl)
+        cell.addView(cv, LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
         val nameText = pl.pname + if (!pl.alive) " †" else ""
         val name = tv(nameText, 12f, true,
             if (pl.alive) Color.WHITE else Color.parseColor("#9AA0B5"))
@@ -1465,8 +1640,14 @@ class MainActivity : Activity() {
         val left = LinearLayout(this)
         left.orientation = LinearLayout.VERTICAL
         left.gravity = Gravity.CENTER_HORIZONTAL
-        left.addView(CharacterView(this, sp.animal, sp.alive),
-            LinearLayout.LayoutParams(dp(52), dp(52)))
+        val cvv = CharacterView(this, sp.animal, sp.alive)
+        cvv.emotion = when {
+            !sp.alive -> 0
+            t.suspect -> 2   // 誰かを疑う=険しい表情
+            t.text.contains("信用") || t.text.contains("信頼") || t.text.contains("♪") -> 1
+            else -> 0
+        }
+        left.addView(cvv, LinearLayout.LayoutParams(dp(52), dp(52)))
         row.addView(left)
 
         // 右：吹き出し
@@ -1672,6 +1853,7 @@ class MainActivity : Activity() {
         currentTalks = ArrayList()
         predictedWolves = LinkedHashSet()
         predictionActive = false
+        moodVictory = 0
         showRoleReveal()
     }
 
@@ -2074,6 +2256,7 @@ class MainActivity : Activity() {
 
     private fun showGameOver(w: Int) {
         night = false
+        moodVictory = w    // 1=村人勝利→村人が喜ぶ / 2=人狼勝利→人狼が喜ぶ
         val e = engine
         val humanWolf = e.human().role.isWolf
         val humanWin = (w == 1 && !humanWolf) || (w == 2 && humanWolf)
