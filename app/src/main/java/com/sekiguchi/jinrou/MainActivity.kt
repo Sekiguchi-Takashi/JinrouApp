@@ -95,6 +95,25 @@ class GameEngine {
     var detectiveId = -1                  // 名探偵の称号を持つキャラ
     var detectivePick = -1                // 今日の名探偵の予想
     var newDetectiveJustNow = false       // 今回の開票で名探偵が誕生した
+    val flags = LinkedHashSet<Int>()      // あなたが旗を立てた相手（怪しいと思う印）
+    var mostSuspectedIds = ArrayList<Int>()  // 今ターン最も疑われている2キャラ
+
+    // 生存人狼の数に応じた旗の最大数（人狼2匹→2本 / 1匹以下→1本）
+    fun maxFlags(): Int = alive().count { it.role.isWolf }.coerceIn(1, 2)
+
+    // 会話（疑い先）を集計して最も疑われている上位2キャラを求める
+    fun computeMostSuspected(talks: List<Talk>) {
+        val count = HashMap<Int, Int>()
+        for (t in talks) {
+            if (!t.suspect) continue
+            if (t.targetId == t.speakerId) continue
+            if (!players[t.targetId].alive) continue
+            count[t.targetId] = (count[t.targetId] ?: 0) + 1
+        }
+        mostSuspectedIds = ArrayList(
+            count.entries.sortedByDescending { it.value }.take(2)
+                .filter { it.value > 0 }.map { it.key })
+    }
 
     val morningLog = ArrayList<String>()
     var lastVictim: Player? = null
@@ -167,6 +186,8 @@ class GameEngine {
         morningLog.clear()
         persuaded.clear()
         persuadedToday = false
+        flags.clear()
+        mostSuspectedIds = ArrayList()
 
         val seer = players.firstOrNull { it.role == Role.SEER && it.alive }
         val hunter = players.firstOrNull { it.role == Role.HUNTER && it.alive }
@@ -496,6 +517,12 @@ class GameEngine {
                 // あなたの説得を採用
                 val pers = persuaded[v.id]?.let { players[it] }?.takeIf { it.alive && cands.contains(it) }
                 if (pers != null && Random.nextInt(100) < 75) return@run pers
+                // あなたが旗を立てた相手に、信用がある場合は弱く同調（40%）
+                if (humanTrust && !v.role.isWolf) {
+                    val flagged = flags.mapNotNull { players[it] }
+                        .filter { it.alive && cands.contains(it) }
+                    if (flagged.isNotEmpty() && Random.nextInt(100) < 40) return@run flagged.random()
+                }
                 // 名探偵の予想に同調
                 if (detectivePick >= 0 && v.id != detectiveId) {
                     val dt = players[detectivePick]
@@ -1271,9 +1298,29 @@ class MainActivity : Activity() {
         val cell = LinearLayout(this)
         cell.orientation = LinearLayout.VERTICAL
         cell.gravity = Gravity.CENTER
+
+        // キャラ画像の上に旗/疑いマークを重ねる
+        val stack = FrameLayout(this)
         val cv = CharacterView(this, pl.animal, pl.alive)
         cv.emotion = emotionOf(pl)
-        cell.addView(cv, LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
+        stack.addView(cv, FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
+
+        // 最も疑われているキャラの目印（頭上に👀）
+        if (pl.alive && engine.mostSuspectedIds.contains(pl.id)) {
+            val mark = tv("👀", (sizeDp * 0.32f).coerceAtLeast(14f))
+            val mlp = FrameLayout.LayoutParams(-2, -2)
+            mlp.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            stack.addView(mark, mlp)
+        }
+        // あなたが立てた旗
+        if (pl.alive && engine.flags.contains(pl.id)) {
+            val flag = tv("🚩", (sizeDp * 0.36f).coerceAtLeast(16f))
+            val flp = FrameLayout.LayoutParams(-2, -2)
+            flp.gravity = Gravity.TOP or Gravity.END
+            stack.addView(flag, flp)
+        }
+        cell.addView(stack)
+
         val nameText = pl.pname + if (!pl.alive) " †" else ""
         val name = tv(nameText, 12f, true,
             if (pl.alive) Color.WHITE else Color.parseColor("#9AA0B5"))
@@ -2172,9 +2219,24 @@ class MainActivity : Activity() {
         setScreen(pn)
     }
 
+    private fun toggleFlag(pl: Player) {
+        val e = engine
+        if (e.flags.contains(pl.id)) {
+            e.flags.remove(pl.id)
+        } else {
+            // 生存人狼が減って上限が下がった場合、古い旗を落として調整
+            while (e.flags.size >= e.maxFlags() && e.flags.isNotEmpty()) {
+                e.flags.remove(e.flags.first())
+            }
+            if (e.flags.size < e.maxFlags()) e.flags.add(pl.id)
+        }
+        showDay()
+    }
+
     private fun showDay() {
         val e = engine
         val h = e.human()
+        e.computeMostSuspected(currentTalks)   // 今ターン最も疑われている2キャラを更新
         val pn = panel()
         val cd = card()
         cd.addView(tv("💬 ${e.dayCount}日目の昼 - 話し合い", 19f, true, Color.parseColor("#FFE28A")))
@@ -2188,6 +2250,19 @@ class MainActivity : Activity() {
         }
         cd.addView(space(dp(8)))
         cd.addView(btn("📋 まとめを見る", Color.parseColor("#3D9E6B")) { showSummaryDialog() })
+
+        // 🚩 旗機能（生きているあなただけ操作可能）
+        if (h.alive) {
+            cd.addView(space(dp(8)))
+            cd.addView(tv("🚩 怪しいと思う動物に旗を立てる（最大 ${e.maxFlags()} 本）",
+                13f, true, Color.parseColor("#FFC9C9")))
+            cd.addView(tv("残り旗: ${e.maxFlags() - e.flags.size} 本　（タップで付け外し）",
+                12f, false, Color.parseColor("#BFD0FF")))
+            val cands = e.alive().filter { it.id != e.humanId }
+            cd.addView(charGrid(cands, 56, 4) { pl -> toggleFlag(pl) })
+            cd.addView(tv("👀 = 今もっとも疑われている動物", 11f, false, Color.parseColor("#BFD0FF")))
+        }
+
         cd.addView(space(dp(10)))
 
         // 会話：キャラを1列に並べて吹き出しで表示（画面ごと下にスクロール可能）
