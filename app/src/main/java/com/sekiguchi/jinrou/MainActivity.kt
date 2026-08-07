@@ -27,12 +27,13 @@ import kotlin.random.Random
 // データ定義
 // =====================================================
 
-enum class Role(val jp: String, val desc: String, val isWolf: Boolean) {
-    VILLAGER("村人", "特殊能力はありません。推理と投票で村を守りましょう。", false),
-    SEER("占い師", "毎晩1人を占い、人狼かどうかを知ることができます。", false),
-    MEDIUM("霊能者", "処刑された人が人狼だったかどうかを知ることができます。", false),
-    HUNTER("狩人", "毎晩1人を護衛し、人狼の襲撃から守ります。", false),
-    WEREWOLF("人狼", "毎晩1人を襲撃します。仲間の人狼が誰か分かります。", true)
+enum class Role(val jp: String, val desc: String, val isWolf: Boolean, val wolfSide: Boolean) {
+    VILLAGER("村人", "特殊能力はありません。推理と投票で村を守りましょう。", false, false),
+    SEER("占い師", "毎晩1人を占い、人狼かどうかを知ることができます。", false, false),
+    MEDIUM("霊能者", "処刑された人が人狼だったかどうかを知ることができます。", false, false),
+    HUNTER("狩人", "毎晩1人を護衛し、人狼の襲撃から守ります。", false, false),
+    WEREWOLF("人狼", "毎晩1人を襲撃します。仲間の人狼が誰か分かります。", true, true),
+    MADMAN("狂人", "人間ですが人狼陣営です。占いでは「人狼ではない」と出ます。人狼を勝たせましょう。", false, true)
 }
 
 enum class Animal(val jp: String) {
@@ -121,6 +122,18 @@ class GameEngine {
     var lastVotes: Map<Int, Int> = emptyMap()
     val wolfVictimIds = ArrayList<Int>()   // 人狼に襲撃されたキャラ（夜画面の下に表示）
 
+    // 推理ノート用の履歴
+    val noteTalks = ArrayList<Pair<Int, Talk>>()      // (dayCount, 発言) 疑い/信頼の記録
+    val noteVotes = ArrayList<Triple<Int, Int, Int>>() // (dayCount, voterId, targetId) 投票履歴
+    val noteAbilities = ArrayList<String>()            // 占い/霊媒/襲撃/処刑などの結果ログ
+
+    fun logTalks(day: Int, talks: List<Talk>) {
+        for (t in talks) {
+            if (t.speakerId == t.targetId) continue
+            noteTalks.add(day to t)
+        }
+    }
+
     fun human() = players[humanId]
     fun alive() = players.filter { it.alive }
 
@@ -129,9 +142,9 @@ class GameEngine {
         val animals = Animal.values()
         for (i in 0 until N) players.add(Player(i, NAMES[i], animals[i]))
         val roles = mutableListOf(
-            Role.VILLAGER, Role.VILLAGER, Role.VILLAGER, Role.VILLAGER,
+            Role.VILLAGER, Role.VILLAGER, Role.VILLAGER,
             Role.SEER, Role.MEDIUM, Role.HUNTER,
-            Role.WEREWOLF, Role.WEREWOLF
+            Role.WEREWOLF, Role.WEREWOLF, Role.MADMAN
         )
         roles.shuffle()
         for (i in 0 until N) players[i].role = roles[i]
@@ -141,10 +154,10 @@ class GameEngine {
 
     // 0=続行 1=村人チーム勝利 2=人狼チーム勝利
     fun winner(): Int {
-        val w = alive().count { it.role.isWolf }
-        val v = alive().size - w
-        if (w == 0) return 1
-        if (w >= v) return 2
+        val wolves = alive().count { it.role.isWolf }          // 実際の人狼のみ
+        if (wolves == 0) return 1                              // 人狼全滅→狂人が残っても村人勝利
+        val villagerSide = alive().count { !it.role.wolfSide } // 狂人は村人側に数えない
+        if (wolves >= villagerSide) return 2
         return 0
     }
 
@@ -198,6 +211,8 @@ class GameEngine {
             if (seer.id == humanId) {
                 if (humanSeerTarget != null) {
                     humanSeerResults[humanSeerTarget.id] = humanSeerTarget.role.isWolf
+                    noteAbilities.add("${dayCount}日目 🔮 あなたは ${humanSeerTarget.pname} を占った → " +
+                        if (humanSeerTarget.role.isWolf) "人狼！" else "人狼ではない")
                 }
             } else {
                 val t = cpuSeerTarget(seer)
@@ -222,12 +237,15 @@ class GameEngine {
         lastVictim = null
         if (target != null) {
             if (guard != null && guard.id == target.id) {
-                // 護衛成功 → 犠牲者なし
+                noteAbilities.add("${dayCount}日目 🛡️ 護衛成功。今夜の犠牲者はいなかった")
             } else {
                 target.alive = false
                 lastVictim = target
                 wolfVictimIds.add(target.id)
+                noteAbilities.add("${dayCount}日目 🐺 ${target.pname} が人狼に襲撃された")
             }
+        } else {
+            noteAbilities.add("${dayCount}日目 ☀️ 平和な朝を迎えた")
         }
 
         // 霊能結果（前日の処刑者）
@@ -265,10 +283,12 @@ class GameEngine {
                 seerClaimants.add(realSeer.id)   // 本物も名乗り出ないことがある
             }
         }
-        // 人狼のうち1人（CPU）が偽占い師として名乗り出ることがある
-        val cpuWolves = players.filter { it.role.isWolf && it.alive && it.id != humanId }
-        if (cpuWolves.isNotEmpty() && Random.nextInt(100) < 55) {
-            fakeSeerId = cpuWolves.random().id
+        // 人狼または狂人（人狼陣営のCPU）が1人、偽占い師として名乗り出ることがある
+        val cpuFakers = players.filter {
+            (it.role == Role.WEREWOLF || it.role == Role.MADMAN) && it.alive && it.id != humanId
+        }
+        if (cpuFakers.isNotEmpty() && Random.nextInt(100) < 55) {
+            fakeSeerId = cpuFakers.random().id
             seerClaimants.add(fakeSeerId)
         }
         seerClaimants.shuffle()
@@ -506,7 +526,8 @@ class GameEngine {
                 continue
             }
             val cands0 = alive().filter { it.id != v.id }
-            val candsW = if (v.role.isWolf) cands0.filter { !it.role.isWolf } else cands0
+            // 人狼・狂人（人狼陣営）は人狼に投票しない
+            val candsW = if (v.role.wolfSide) cands0.filter { !it.role.isWolf } else cands0
             val cands = if (candsW.isNotEmpty()) candsW else cands0
             val pick = run {
                 // 名探偵本人は自分の予想に投票
@@ -541,7 +562,7 @@ class GameEngine {
         newDetectiveJustNow = false
         for ((voterId, targetId) in votes) {
             if (voterId == humanId) continue
-            if (players[voterId].role.isWolf) continue
+            if (players[voterId].role.wolfSide) continue   // 人狼・狂人は名探偵になれない
             if (players[targetId].role.isWolf) {
                 val st = (voteStreak[voterId] ?: 0) + 1
                 voteStreak[voterId] = st
@@ -560,6 +581,9 @@ class GameEngine {
         val executed = players[top.random()]
         executed.alive = false
         lastExecuted = executed
+        // 推理ノートに記録
+        for ((voterId, targetId) in votes) noteVotes.add(Triple(dayCount, voterId, targetId))
+        noteAbilities.add("${dayCount}日目 ⚖️ 投票の結果、${executed.pname} が処刑された")
         return executed
     }
 
@@ -1823,7 +1847,72 @@ class MainActivity : Activity() {
         d.show()
     }
 
-    // ---------- タイトル / ルール ----------
+    // ---------- 推理ノート ----------
+
+    private fun showNoteDialog() {
+        val e = engine
+        val d = android.app.Dialog(this)
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val outer = card()
+        val sc = ScrollView(this)
+        sc.addView(outer)
+        val dm = resources.displayMetrics
+
+        outer.addView(tv("📓 推理ノート", 19f, true, Color.parseColor("#FFE28A")))
+        outer.addView(space(dp(4)))
+        outer.addView(tv("これまでの発言・投票・能力の記録", 12f, false, Color.parseColor("#BFD0FF")))
+        outer.addView(space(dp(10)))
+
+        // 能力・出来事の履歴
+        outer.addView(tv("🔮 能力・出来事", 15f, true, Color.parseColor("#A8D8FF")))
+        if (e.noteAbilities.isEmpty()) {
+            outer.addView(tv("まだ記録はありません。", 13f, false, Color.parseColor("#9AA0B5")))
+        } else {
+            for (line in e.noteAbilities) outer.addView(tv("・$line", 13f))
+        }
+        outer.addView(space(dp(10)))
+
+        // 投票履歴（日ごと）
+        outer.addView(tv("⚖️ 投票の記録", 15f, true, Color.parseColor("#FFD08A")))
+        if (e.noteVotes.isEmpty()) {
+            outer.addView(tv("まだ投票はありません。", 13f, false, Color.parseColor("#9AA0B5")))
+        } else {
+            val byDay = e.noteVotes.groupBy { it.first }
+            for ((day, list) in byDay.toSortedMap()) {
+                outer.addView(tv("${day}日目", 13f, true, Color.parseColor("#FFE28A")))
+                for ((_, voter, target) in list) {
+                    outer.addView(tv("　${e.players[voter].pname} → ${e.players[target].pname}", 13f))
+                }
+            }
+        }
+        outer.addView(space(dp(10)))
+
+        // 発言履歴（疑い/信頼）
+        outer.addView(tv("💬 発言の記録", 15f, true, Color.parseColor("#A8E6A1")))
+        if (e.noteTalks.isEmpty()) {
+            outer.addView(tv("まだ発言はありません。", 13f, false, Color.parseColor("#9AA0B5")))
+        } else {
+            var curDay = -1
+            for ((day, t) in e.noteTalks) {
+                if (day != curDay) {
+                    outer.addView(tv("${day}日目", 13f, true, Color.parseColor("#FFE28A")))
+                    curDay = day
+                }
+                val arrow = if (t.suspect) "🐺疑" else "🤝信"
+                val col = if (t.suspect) Color.parseColor("#FFC9C9") else Color.parseColor("#C8F0C2")
+                outer.addView(tv("　$arrow ${e.players[t.speakerId].pname} → ${e.players[t.targetId].pname}",
+                    12f, false, col))
+            }
+        }
+
+        outer.addView(space(dp(12)))
+        outer.addView(btn("とじる") { d.dismiss() })
+
+        d.setContentView(sc)
+        d.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        d.window?.setLayout((dm.widthPixels * 0.94f).toInt(), (dm.heightPixels * 0.88f).toInt())
+        d.show()
+    }
 
     private fun showTitle() {
         night = false
@@ -1917,7 +2006,10 @@ class MainActivity : Activity() {
             "・人狼チーム：人狼の人数が村人側の人数と同じになれば勝利。", 14f))
         cd.addView(space(dp(10)))
         cd.addView(tv("【構成（総数9人）】", 15f, true))
-        cd.addView(tv("村人 ×4 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2", 14f))
+        cd.addView(tv("村人 ×3 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2 / 狂人 ×1", 14f))
+        cd.addView(space(dp(4)))
+        cd.addView(tv("🌀 狂人は人間ですが人狼陣営。占いでは白（人狼ではない）と出ますが、人狼を勝たせようと動きます。人狼が誰かは知りません。",
+            13f, false, Color.parseColor("#FFC98A")))
         cd.addView(space(dp(14)))
         cd.addView(btn("タイトルへ戻る") { showTitle() })
         pn.addView(cd)
@@ -1933,6 +2025,7 @@ class MainActivity : Activity() {
         predictedWolves = LinkedHashSet()
         predictionActive = false
         moodVictory = 0
+        loggedTalkDay = -1
         showRoleReveal()
     }
 
@@ -1948,7 +2041,7 @@ class MainActivity : Activity() {
         cd.addView(nm)
         cd.addView(space(dp(10)))
         val roleT = tv("役職: ${h.role.jp}", 22f, true,
-            if (h.role.isWolf) Color.parseColor("#FF9B9B") else Color.parseColor("#A8E6A1"))
+            if (h.role.wolfSide) Color.parseColor("#FF9B9B") else Color.parseColor("#A8E6A1"))
         roleT.gravity = Gravity.CENTER
         cd.addView(roleT)
         cd.addView(tv(h.role.desc, 14f))
@@ -1957,6 +2050,10 @@ class MainActivity : Activity() {
             cd.addView(space(dp(6)))
             cd.addView(tv("🐺 仲間の人狼: ${partner.pname}（${partner.animal.jp}）",
                 15f, true, Color.parseColor("#FF9B9B")))
+        } else if (h.role == Role.MADMAN) {
+            cd.addView(space(dp(6)))
+            cd.addView(tv("🌀 あなたは狂人。人狼が誰かは分かりません。\n占いでは白（人狼ではない）と出ます。人狼が勝てば、あなたの勝ちです。",
+                14f, true, Color.parseColor("#FFC98A")))
         }
         cd.addView(space(dp(16)))
         cd.addView(btn("1日目の昼へ", Color.parseColor("#D8703D")) {
@@ -2233,10 +2330,16 @@ class MainActivity : Activity() {
         showDay()
     }
 
+    private var loggedTalkDay = -1
+
     private fun showDay() {
         val e = engine
         val h = e.human()
         e.computeMostSuspected(currentTalks)   // 今ターン最も疑われている2キャラを更新
+        if (loggedTalkDay != e.dayCount) {     // 当日の会話を推理ノートへ一度だけ記録
+            e.logTalks(e.dayCount, currentTalks)
+            loggedTalkDay = e.dayCount
+        }
         val pn = panel()
         val cd = card()
         cd.addView(tv("💬 ${e.dayCount}日目の昼 - 話し合い", 19f, true, Color.parseColor("#FFE28A")))
@@ -2250,6 +2353,8 @@ class MainActivity : Activity() {
         }
         cd.addView(space(dp(8)))
         cd.addView(btn("📋 まとめを見る", Color.parseColor("#3D9E6B")) { showSummaryDialog() })
+        cd.addView(space(dp(6)))
+        cd.addView(btn("📓 推理ノート", Color.parseColor("#3D6BD8")) { showNoteDialog() })
 
         // 🚩 旗機能（生きているあなただけ操作可能）
         if (h.alive) {
@@ -2371,8 +2476,8 @@ class MainActivity : Activity() {
         night = false
         moodVictory = w    // 1=村人勝利→村人が喜ぶ / 2=人狼勝利→人狼が喜ぶ
         val e = engine
-        val humanWolf = e.human().role.isWolf
-        val humanWin = (w == 1 && !humanWolf) || (w == 2 && humanWolf)
+        val humanWolfSide = e.human().role.wolfSide
+        val humanWin = (w == 1 && !humanWolfSide) || (w == 2 && humanWolfSide)
 
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
         sp.edit()
@@ -2398,7 +2503,11 @@ class MainActivity : Activity() {
             if (!p2.alive) line += " †"
             if (p2.id == e.humanId) line += " ← あなた"
             cd.addView(tv(line, 14f, false,
-                if (p2.role.isWolf) Color.parseColor("#FF9B9B") else Color.WHITE))
+                when {
+                    p2.role.isWolf -> Color.parseColor("#FF9B9B")
+                    p2.role == Role.MADMAN -> Color.parseColor("#FFC98A")
+                    else -> Color.WHITE
+                }))
         }
         cd.addView(space(dp(16)))
         if (predictionActive && predictedWolves.size == 2) {
