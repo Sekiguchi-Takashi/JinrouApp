@@ -33,7 +33,8 @@ enum class Role(val jp: String, val desc: String, val isWolf: Boolean, val wolfS
     MEDIUM("霊能者", "処刑された人が人狼だったかどうかを知ることができます。", false, false),
     HUNTER("狩人", "毎晩1人を護衛し、人狼の襲撃から守ります。", false, false),
     WEREWOLF("人狼", "毎晩1人を襲撃します。仲間の人狼が誰か分かります。", true, true),
-    MADMAN("狂人", "人間ですが人狼陣営です。占いでは「人狼ではない」と出ます。人狼を勝たせましょう。", false, true)
+    MADMAN("狂人", "人間ですが人狼陣営です。占いでは「人狼ではない」と出ます。人狼を勝たせましょう。", false, true),
+    FOX_SPIRIT("妖狐", "第三陣営。占われると死にますが、人狼の襲撃では死にません。最後まで生き残れば、あなただけの勝利です。", false, false)
 }
 
 enum class Animal(val jp: String) {
@@ -64,6 +65,12 @@ class GameEngine {
     val players = ArrayList<Player>()
     var humanId = -1
     var dayCount = 0
+
+    // 難易度（0=やさしい / 1=ふつう / 2=むずかしい）。CPUの賢さに影響
+    var difficulty = 1
+    val wolfSeerTargetRate get() = when (difficulty) { 0 -> 50; 1 -> 70; else -> 88 }   // 人狼が本物占い師を狙う率
+    val fakeSeerRate get() = when (difficulty) { 0 -> 40; 1 -> 55; else -> 72 }         // 偽占い師が名乗り出る率
+    val detectiveFollowRate get() = when (difficulty) { 0 -> 68; 1 -> 85; else -> 94 }  // 名探偵の予想に投票同調する率
 
     // プレイヤー（人間）だけが知っている情報
     val humanSeerResults = LinkedHashMap<Int, Boolean>()   // id -> 人狼か
@@ -142,9 +149,10 @@ class GameEngine {
         val animals = Animal.values()
         for (i in 0 until N) players.add(Player(i, NAMES[i], animals[i]))
         val roles = mutableListOf(
-            Role.VILLAGER, Role.VILLAGER, Role.VILLAGER,
+            Role.VILLAGER, Role.VILLAGER,
             Role.SEER, Role.MEDIUM, Role.HUNTER,
-            Role.WEREWOLF, Role.WEREWOLF, Role.MADMAN
+            Role.WEREWOLF, Role.WEREWOLF, Role.MADMAN,
+            Role.FOX_SPIRIT
         )
         roles.shuffle()
         for (i in 0 until N) players[i].role = roles[i]
@@ -152,12 +160,22 @@ class GameEngine {
         dayCount = 1   // 1日目は昼の話し合いから始まる
     }
 
-    // 0=続行 1=村人チーム勝利 2=人狼チーム勝利
+    // 0=続行 1=村人チーム勝利 2=人狼チーム勝利 3=妖狐勝利
     fun winner(): Int {
-        val wolves = alive().count { it.role.isWolf }          // 実際の人狼のみ
-        if (wolves == 0) return 1                              // 人狼全滅→狂人が残っても村人勝利
-        val villagerSide = alive().count { !it.role.wolfSide } // 狂人は村人側に数えない
-        if (wolves >= villagerSide) return 2
+        val foxAlive = alive().any { it.role == Role.FOX_SPIRIT }
+        val wolves = alive().count { it.role.isWolf }
+        // 妖狐は「人狼陣営でも村人陣営でもない」ので、生存者数の勝敗カウントから除外する
+        val nonFox = alive().filter { it.role != Role.FOX_SPIRIT }
+        val villagerSide = nonFox.count { !it.role.wolfSide }
+        // 決着条件
+        if (wolves == 0) {
+            // 人狼全滅：妖狐が生きていれば妖狐の勝ち、いなければ村人の勝ち
+            return if (foxAlive) 3 else 1
+        }
+        if (wolves >= villagerSide) {
+            // 人狼が村人側を制圧：妖狐が生きていれば妖狐の勝ち、いなければ人狼の勝ち
+            return if (foxAlive) 3 else 2
+        }
         return 0
     }
 
@@ -171,7 +189,7 @@ class GameEngine {
         }
         val realSeer = players.firstOrNull { it.role == Role.SEER }
         if (realSeer != null && realSeer.alive &&
-            seerClaimants.contains(realSeer.id) && Random.nextInt(100) < 70) {
+            seerClaimants.contains(realSeer.id) && Random.nextInt(100) < wolfSeerTargetRate) {
             return realSeer
         }
         return cands.random()
@@ -206,18 +224,27 @@ class GameEngine {
         val hunter = players.firstOrNull { it.role == Role.HUNTER && it.alive }
         val wolvesAlive = players.filter { it.role.isWolf && it.alive }
 
-        // 占い
+        // 占い（妖狐を占うと呪殺＝死亡。結果は「人狼ではない」＝白）
+        var foxCursed: Player? = null
         if (seer != null) {
             if (seer.id == humanId) {
                 if (humanSeerTarget != null) {
                     humanSeerResults[humanSeerTarget.id] = humanSeerTarget.role.isWolf
                     noteAbilities.add("${dayCount}日目 🔮 あなたは ${humanSeerTarget.pname} を占った → " +
                         if (humanSeerTarget.role.isWolf) "人狼！" else "人狼ではない")
+                    if (humanSeerTarget.role == Role.FOX_SPIRIT) foxCursed = humanSeerTarget
                 }
             } else {
                 val t = cpuSeerTarget(seer)
-                if (t != null) cpuSeerResults[t.id] = t.role.isWolf
+                if (t != null) {
+                    cpuSeerResults[t.id] = t.role.isWolf
+                    if (t.role == Role.FOX_SPIRIT) foxCursed = t
+                }
             }
+        }
+        if (foxCursed != null) {
+            foxCursed.alive = false
+            noteAbilities.add("${dayCount}日目 🦊 ${foxCursed.pname} が占われて息絶えた（妖狐だった）")
         }
 
         // 護衛
@@ -238,6 +265,9 @@ class GameEngine {
         if (target != null) {
             if (guard != null && guard.id == target.id) {
                 noteAbilities.add("${dayCount}日目 🛡️ 護衛成功。今夜の犠牲者はいなかった")
+            } else if (target.role == Role.FOX_SPIRIT) {
+                // 妖狐は人狼の襲撃では死なない
+                noteAbilities.add("${dayCount}日目 🌫️ 人狼は襲撃したが、なぜか誰も倒れなかった…")
             } else {
                 target.alive = false
                 lastVictim = target
@@ -287,7 +317,7 @@ class GameEngine {
         val cpuFakers = players.filter {
             (it.role == Role.WEREWOLF || it.role == Role.MADMAN) && it.alive && it.id != humanId
         }
-        if (cpuFakers.isNotEmpty() && Random.nextInt(100) < 55) {
+        if (cpuFakers.isNotEmpty() && Random.nextInt(100) < fakeSeerRate) {
             fakeSeerId = cpuFakers.random().id
             seerClaimants.add(fakeSeerId)
         }
@@ -547,7 +577,7 @@ class GameEngine {
                 // 名探偵の予想に同調
                 if (detectivePick >= 0 && v.id != detectiveId) {
                     val dt = players[detectivePick]
-                    if (dt.alive && cands.contains(dt) && Random.nextInt(100) < 85) return@run dt
+                    if (dt.alive && cands.contains(dt) && Random.nextInt(100) < detectiveFollowRate) return@run dt
                 }
                 val black = cands.filter { publicBlack.contains(it.id) }
                 if (black.isNotEmpty()) return@run black.random()
@@ -744,6 +774,49 @@ object CharacterArt {
                 p.color = Color.parseColor("#8FD0FF")
                 val tearY = eyeY + eh * 0.9f + (t % 1f) * hr * 0.7f
                 c.drawCircle(ex + sgn * ew * 0.3f, tearY, ew * 0.28f, p)
+            } else if (emotion == 3) {
+                // 怒り：つり上がった目＋怒り眉
+                p.color = Color.WHITE
+                c.drawOval(RectF(ex - ew, eyeY - eh * 0.7f, ex + ew, eyeY + eh * 0.85f), p)
+                p.color = irisColor(a)
+                c.drawOval(RectF(ex - ew * 0.8f, eyeY - eh * 0.5f, ex + ew * 0.8f, eyeY + eh * 0.85f), p)
+                p.color = Color.BLACK
+                c.drawOval(RectF(ex - ew * 0.45f, eyeY - eh * 0.15f, ex + ew * 0.45f, eyeY + eh * 0.6f), p)
+                stroke.color = Color.parseColor("#3A2A28")
+                stroke.strokeWidth = hr * 0.09f
+                stroke.strokeCap = Paint.Cap.ROUND
+                // 内側が下がった怒り眉
+                c.drawLine(ex - ew * 1.0f, eyeY - eh * 1.15f, ex + ew * 0.5f, eyeY - eh * 0.7f, stroke)
+            } else if (emotion == 4) {
+                // 恐怖：見開いた目＋小さく震える瞳
+                p.color = Color.WHITE
+                c.drawOval(RectF(ex - ew * 1.1f, eyeY - eh * 1.1f, ex + ew * 1.1f, eyeY + eh * 1.1f), p)
+                p.color = irisColor(a)
+                val shake = kotlin.math.sin(t * 40f) * ew * 0.12f
+                c.drawOval(RectF(ex - ew * 0.5f + shake, eyeY - eh * 0.5f,
+                                 ex + ew * 0.5f + shake, eyeY + eh * 0.5f), p)
+                p.color = Color.BLACK
+                c.drawOval(RectF(ex - ew * 0.28f + shake, eyeY - eh * 0.28f,
+                                 ex + ew * 0.28f + shake, eyeY + eh * 0.28f), p)
+            } else if (emotion == 5) {
+                // 焦り：ぐるぐる（うずまき目）
+                stroke.color = Color.parseColor("#3A2A28")
+                stroke.strokeWidth = hr * 0.07f
+                stroke.style = Paint.Style.STROKE
+                for (k in 1..3) {
+                    val rr = ew * (0.3f + k * 0.22f)
+                    c.drawArc(RectF(ex - rr, eyeY - rr, ex + rr, eyeY + rr),
+                        k * 90f + t * 120f, 260f, false, stroke)
+                }
+                stroke.style = Paint.Style.STROKE
+                p.style = Paint.Style.FILL
+            } else if (emotion == 6) {
+                // 安心：ゆるやかに閉じた目（下弧）
+                stroke.color = Color.parseColor("#3A2A28")
+                stroke.strokeWidth = hr * 0.10f
+                stroke.strokeCap = Paint.Cap.ROUND
+                val arc = RectF(ex - ew, eyeY - eh * 0.5f, ex + ew, eyeY + eh * 0.5f)
+                c.drawArc(arc, 200f, 140f, false, stroke)
             } else {
                 p.color = Color.WHITE
                 c.drawOval(RectF(ex - ew, eyeY - eh, ex + ew, eyeY + eh), p)
@@ -796,6 +869,42 @@ object CharacterArt {
                     c.drawArc(RectF(cx - hr * 0.22f, hy + hr * 0.52f, cx + hr * 0.22f, hy + hr * 0.82f),
                         200f, 140f, false, stroke)
                 }
+                3 -> {
+                    // 怒り：食いしばった口（ギザ）
+                    stroke.strokeWidth = hr * 0.06f
+                    val my = hy + hr * 0.58f
+                    var x0 = cx - hr * 0.28f
+                    val step = hr * 0.14f
+                    var up = true
+                    while (x0 < cx + hr * 0.28f) {
+                        c.drawLine(x0, my + (if (up) -hr * 0.06f else hr * 0.06f),
+                                   x0 + step, my + (if (up) hr * 0.06f else -hr * 0.06f), stroke)
+                        x0 += step; up = !up
+                    }
+                }
+                4 -> {
+                    // 恐怖：小さく開いた口（わなわな）
+                    p.color = Color.parseColor("#7A3038")
+                    val q = kotlin.math.abs(kotlin.math.sin(t * 20f))
+                    c.drawOval(RectF(cx - hr * 0.12f, hy + hr * 0.5f,
+                                     cx + hr * 0.12f, hy + hr * 0.5f + hr * (0.12f + q * 0.1f)), p)
+                }
+                5 -> {
+                    // 焦り：波打つ口
+                    stroke.strokeWidth = hr * 0.05f
+                    val my = hy + hr * 0.56f
+                    val path = Path()
+                    path.moveTo(cx - hr * 0.26f, my)
+                    path.cubicTo(cx - hr * 0.1f, my - hr * 0.12f,
+                                 cx + hr * 0.1f, my + hr * 0.12f, cx + hr * 0.26f, my)
+                    c.drawPath(path, stroke)
+                }
+                6 -> {
+                    // 安心：おだやかな微笑み
+                    stroke.strokeWidth = hr * 0.05f
+                    c.drawArc(RectF(cx - hr * 0.2f, hy + hr * 0.34f, cx + hr * 0.2f, hy + hr * 0.6f),
+                        15f, 150f, false, stroke)
+                }
                 else -> {
                     val m = RectF(cx - hr * 0.22f, hy + hr * 0.32f, cx + hr * 0.22f, hy + hr * 0.62f)
                     c.drawArc(m, 20f, 140f, false, stroke)
@@ -821,11 +930,43 @@ object CharacterArt {
             }
         }
 
-        // 喜びの音符 / 悲しみの汗
-        if (alive && emotion == 1) {
-            p.color = Color.parseColor("#FFD450")
-            tp.textSize = hr * 0.7f
-            c.drawText("♪", cx + hr * 1.2f, hy - hr * 0.6f + kotlin.math.sin(t * 6.2832f) * hr * 0.2f, tp)
+        // 感情エフェクト
+        if (alive) {
+            when (emotion) {
+                1 -> {
+                    p.color = Color.parseColor("#FFD450")
+                    tp.textSize = hr * 0.7f
+                    c.drawText("♪", cx + hr * 1.2f, hy - hr * 0.6f + kotlin.math.sin(t * 6.2832f) * hr * 0.2f, tp)
+                }
+                3 -> {
+                    // 怒りマーク（青筋）
+                    tp.textSize = hr * 0.6f
+                    c.drawText("💢", cx + hr * 0.95f, hy - hr * 0.7f, tp)
+                }
+                4 -> {
+                    // 恐怖：青ざめ＋汗
+                    p.color = Color.argb(120, 150, 200, 255)
+                    c.drawCircle(cx - hr * 1.0f, hy + hr * 0.1f, hr * 0.18f, p)
+                    p.color = Color.parseColor("#8FD0FF")
+                    val sy = hy - hr * 0.4f + (t % 1f) * hr * 0.8f
+                    c.drawCircle(cx + hr * 1.0f, sy, hr * 0.13f, p)
+                }
+                5 -> {
+                    // 焦り：飛び散る汗
+                    p.color = Color.parseColor("#8FD0FF")
+                    for (k in 0..2) {
+                        val ang = t * 6.2832f + k * 2.1f
+                        c.drawCircle(cx + hr * (1.0f + 0.1f * k) * kotlin.math.cos(ang),
+                                     hy - hr * 0.7f + hr * 0.15f * kotlin.math.sin(ang), hr * 0.09f, p)
+                    }
+                }
+                6 -> {
+                    // 安心：ふわっと音符
+                    p.color = Color.parseColor("#A8E6A1")
+                    tp.textSize = hr * 0.5f
+                    c.drawText("♬", cx + hr * 1.1f, hy - hr * 0.5f + kotlin.math.sin(t * 3.14f) * hr * 0.15f, tp)
+                }
+            }
         }
 
         c.restore()
@@ -972,6 +1113,22 @@ class CharacterView(context: Context, private val animal: Animal, private var al
             2 -> {  // 悲しみ：うつむいてゆっくり揺れる
                 hop = -s * 0.02f + kotlin.math.sin(phase * two * 0.4f) * s * 0.01f
                 lean = kotlin.math.sin(phase * two * 0.35f) * 3f
+            }
+            3 -> {  // 怒り：小刻みにプルプル震える
+                hop = kotlin.math.abs(kotlin.math.sin(phase * two * 3.0f)) * s * 0.02f
+                lean = kotlin.math.sin(phase * two * 8.0f) * 2.5f
+            }
+            4 -> {  // 恐怖：後ずさるように細かく震える
+                hop = kotlin.math.sin(phase * two * 12f) * s * 0.012f
+                lean = kotlin.math.sin(phase * two * 10f) * 2f
+            }
+            5 -> {  // 焦り：せかせか左右に揺れる
+                lean = kotlin.math.sin(phase * two * 4.0f) * 6f
+                hop = kotlin.math.abs(kotlin.math.sin(phase * two * 2.0f)) * s * 0.03f
+            }
+            6 -> {  // 安心：ゆったり大きく呼吸
+                hop = kotlin.math.sin(phase * two * 0.35f) * s * 0.04f
+                lean = kotlin.math.sin(phase * two * 0.3f) * 1.5f
             }
             else -> {  // アイドル：呼吸のような小さな上下＋わずかな傾き
                 hop = kotlin.math.sin(phase * two * 0.6f) * s * 0.03f
@@ -1306,15 +1463,19 @@ class MainActivity : Activity() {
     private var moodVictory = 0    // 1=村人勝利 2=人狼勝利（ゲームオーバー時）
     private fun emotionOf(pl: Player): Int {
         if (!pl.alive) return 0
-        if (moodVictory == 1) return if (pl.role.isWolf) 2 else 1
-        if (moodVictory == 2) return if (pl.role.isWolf) 1 else 2
-        // 直近で処刑・襲撃された仲間がいると悲しむ
-        val v = engine.lastVictim
-        val ex = engine.lastExecuted
-        if ((v != null && !v.alive) || (ex != null && !ex.alive)) {
-            // 人狼は処刑が自分側でなければ内心うれしい…が表には出さないので通常
-            if (pl.id == engine.humanId) return 0
-        }
+        // ゲーム終了時：勝った陣営は喜び、負けた陣営は悲しみ
+        if (moodVictory == 1) return if (pl.role.wolfSide) 2 else if (pl.role == Role.FOX_SPIRIT) 2 else 1
+        if (moodVictory == 2) return if (pl.role.wolfSide) 1 else 2
+        if (moodVictory == 3) return if (pl.role == Role.FOX_SPIRIT) 1 else 2
+        val e = engine
+        // 名探偵は自信ありげに安心
+        if (pl.id == e.detectiveId) return 6
+        // 今もっとも疑われているキャラは焦る
+        if (e.mostSuspectedIds.contains(pl.id)) return 5
+        // あなたが旗を立てた相手は怯える（恐怖）
+        if (e.flags.contains(pl.id)) return 4
+        // 黒判定を受けたキャラは怒る（濡れ衣に反発 or 開き直り）
+        if (e.publicBlack.contains(pl.id)) return 3
         return 0
     }
 
@@ -1946,10 +2107,248 @@ class MainActivity : Activity() {
             pn.addView(space(dp(10)))
         }
 
+        // 難易度切替（タップで やさしい→ふつう→むずかしい を循環）
+        val diffNames = arrayOf("やさしい", "ふつう", "むずかしい")
+        val diffColors = arrayOf("#A8E6A1", "#FFE28A", "#FF9B9B")
+        val curDiff = sp.getInt("difficulty", 1)
+        val diffBtn = btn("難易度: ${diffNames[curDiff]}", Color.parseColor(diffColors[curDiff])) {
+            val next = (sp.getInt("difficulty", 1) + 1) % 3
+            sp.edit().putInt("difficulty", next).apply()
+            showTitle()
+        }
+        pn.addView(diffBtn, LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+
         pn.addView(btn("はじめる", Color.parseColor("#D8703D")) { startGame() },
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
+        pn.addView(btn("📖 キャラ図鑑", Color.parseColor("#3D9E6B")) { showZukan() },
+            LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+        pn.addView(btn("🎭 役職図鑑", Color.parseColor("#7A4FD8")) { showRoleZukan() },
+            LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+        pn.addView(btn("🏅 実績", Color.parseColor("#3D6BD8")) { showAchievements() },
+            LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+        pn.addView(btn("📊 成績", Color.parseColor("#3D9E6B")) { showStats() },
+            LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
         pn.addView(btn("ルール") { showRules() }, LinearLayout.LayoutParams(-1, -2))
+        setScreen(pn)
+    }
+
+    // ---------- 成績（統計） ----------
+
+    private fun showStats() {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("📊 成績", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(10)))
+
+        val games = sp.getInt("games", 0)
+        val wins = sp.getInt("wins", 0)
+        val rate = if (games > 0) wins * 100 / games else 0
+        cd.addView(tv("総合", 15f, true, Color.parseColor("#A8D8FF")))
+        cd.addView(tv("プレイ回数　$games 戦", 14f))
+        cd.addView(tv("勝利　$wins 勝", 14f))
+        cd.addView(tv("勝率　$rate %", 14f, true,
+            when { rate >= 60 -> Color.parseColor("#A8E6A1")
+                   rate >= 40 -> Color.parseColor("#FFE28A")
+                   else -> Color.parseColor("#FF9B9B") }))
+        cd.addView(space(dp(6)))
+        // 勝率バー
+        val barBg = LinearLayout(this)
+        barBg.setBackgroundColor(Color.argb(60, 255, 255, 255))
+        val bar = View(this)
+        bar.setBackgroundColor(Color.parseColor("#A8E6A1"))
+        barBg.addView(bar, LinearLayout.LayoutParams(0, dp(14), rate.toFloat().coerceAtLeast(1f)))
+        val barPad = View(this)
+        barBg.addView(barPad, LinearLayout.LayoutParams(0, dp(14), (100 - rate).toFloat()))
+        cd.addView(barBg, LinearLayout.LayoutParams(-1, dp(14)))
+        cd.addView(space(dp(12)))
+
+        // 役職ごとの解放状況（役職図鑑と連動）
+        cd.addView(tv("役職デビュー", 15f, true, Color.parseColor("#A8D8FF")))
+        val seenCount = Role.values().count { sp.getBoolean("role_seen_${it.name}", false) }
+        cd.addView(tv("経験した役職　$seenCount / ${Role.values().size} 種", 14f))
+        for (r in Role.values()) {
+            val seen = sp.getBoolean("role_seen_${r.name}", false)
+            cd.addView(tv((if (seen) "✔ " else "・ ") + r.jp, 13f, false,
+                if (seen) Color.parseColor("#C8F0C2") else Color.parseColor("#9AA0B5")))
+        }
+        cd.addView(space(dp(12)))
+
+        // 実績の達成状況
+        val achCount = achievementDefs.count { sp.getBoolean("ach_${it.first}", false) }
+        cd.addView(tv("実績　$achCount / ${achievementDefs.size} 解放", 15f, true,
+            Color.parseColor("#A8D8FF")))
+
+        cd.addView(space(dp(14)))
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    // ---------- 役職図鑑 ----------
+
+    private fun showRoleZukan() {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🎭 役職図鑑", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("その役職で一度でも遊ぶと解放されます", 12f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(10)))
+
+        for (r in Role.values()) {
+            val seen = sp.getBoolean("role_seen_${r.name}", false)
+            val faction = when {
+                r.isWolf -> "人狼陣営"
+                r.wolfSide -> "人狼陣営（人間）"
+                r == Role.FOX_SPIRIT -> "第三陣営"
+                else -> "村人陣営"
+            }
+            val col = when {
+                r.isWolf -> Color.parseColor("#FF9B9B")
+                r.wolfSide -> Color.parseColor("#FFC98A")
+                r == Role.FOX_SPIRIT -> Color.parseColor("#E0A8FF")
+                else -> Color.parseColor("#C8F0C2")
+            }
+            val box = card()
+            if (seen) {
+                box.addView(tv("${r.jp}　［$faction］", 16f, true, col))
+                box.addView(tv(r.desc, 13f))
+            } else {
+                box.addView(tv("？？？　［$faction］", 16f, true, Color.parseColor("#6B7280")))
+                box.addView(tv("まだこの役職で遊んでいません。", 13f, false, Color.parseColor("#9AA0B5")))
+            }
+            cd.addView(box)
+            cd.addView(space(dp(8)))
+        }
+
+        cd.addView(space(dp(6)))
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    // ---------- 実績 ----------
+
+    // 実績の定義（id, 名前, 説明）
+    private val achievementDefs = listOf(
+        Triple("first_win", "はじめての勝利", "初めてゲームに勝った"),
+        Triple("win_villager", "村の守り手", "村人陣営で勝利した"),
+        Triple("win_wolf", "月夜の狩人", "人狼陣営で勝利した"),
+        Triple("win_fox", "闇に紛れし者", "妖狐として単独勝利した"),
+        Triple("win_seer", "千里眼", "占い師として勝利した"),
+        Triple("detective", "名探偵", "名探偵の称号を手に入れた"),
+        Triple("survivor", "生存者", "最後まで生き残って勝利した"),
+        Triple("play10", "村の常連", "10回遊んだ"),
+        Triple("all_roles", "役者そろい踏み", "すべての役職で遊んだ")
+    )
+
+    private fun showAchievements() {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val pn = panel()
+        val cd = card()
+        val unlocked = achievementDefs.count { sp.getBoolean("ach_${it.first}", false) }
+        cd.addView(tv("🏅 実績", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("解放 $unlocked / ${achievementDefs.size}", 13f, true, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(10)))
+
+        for ((id, name, desc) in achievementDefs) {
+            val got = sp.getBoolean("ach_$id", false)
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(0, dp(6), 0, dp(6))
+            val icon = tv(if (got) "🏅" else "🔒", 26f)
+            icon.setPadding(0, 0, dp(10), 0)
+            row.addView(icon)
+            val info = LinearLayout(this)
+            info.orientation = LinearLayout.VERTICAL
+            if (got) {
+                info.addView(tv(name, 15f, true, Color.parseColor("#FFE28A")))
+                info.addView(tv(desc, 12f, false, Color.WHITE))
+            } else {
+                info.addView(tv(name, 15f, true, Color.parseColor("#9AA0B5")))
+                info.addView(tv(desc, 12f, false, Color.parseColor("#9AA0B5")))
+            }
+            row.addView(info)
+            cd.addView(row)
+            val sep = View(this)
+            sep.setBackgroundColor(Color.argb(40, 255, 255, 255))
+            cd.addView(sep, LinearLayout.LayoutParams(-1, dp(1)))
+        }
+
+        cd.addView(space(dp(12)))
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    // ---------- キャラ図鑑（好感度） ----------
+
+    private fun showZukan() {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("📖 キャラ図鑑", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("一緒に遊ぶ・そのコで勝つと好感度が上がります", 12f, false,
+            Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(10)))
+
+        Animal.values().forEachIndexed { i, an ->
+            val name = GameEngine.NAMES[i]
+            val met = sp.getInt("met_$i", 0)       // 一緒に遊んだ回数
+            val won = sp.getInt("won_$i", 0)       // そのコが村の勝ちに貢献
+            val fav = (met * 5 + won * 15).coerceAtMost(100)   // 好感度(0-100)
+
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(0, dp(6), 0, dp(6))
+
+            val pl = Player(i, name, an)
+            if (met == 0) {
+                // 未遭遇はシルエット（グレー）扱い
+                val ph = tv("？", 30f, true, Color.parseColor("#6B7280"))
+                ph.gravity = Gravity.CENTER
+                val box = FrameLayout(this)
+                box.addView(ph, FrameLayout.LayoutParams(dp(56), dp(56)).also { it.gravity = Gravity.CENTER })
+                row.addView(box)
+            } else {
+                row.addView(CharacterView(this, an, true),
+                    LinearLayout.LayoutParams(dp(56), dp(56)))
+            }
+
+            val info = LinearLayout(this)
+            info.orientation = LinearLayout.VERTICAL
+            info.setPadding(dp(10), 0, 0, 0)
+            if (met == 0) {
+                info.addView(tv("？？？（${an.jp}）", 15f, true, Color.parseColor("#9AA0B5")))
+                info.addView(tv("まだ出会っていない", 12f, false, Color.parseColor("#9AA0B5")))
+            } else {
+                info.addView(tv("$name（${an.jp}）", 15f, true))
+                // 好感度バー（ハート）
+                val hearts = (fav / 20)   // 0-5
+                val heartStr = "❤".repeat(hearts) + "♡".repeat(5 - hearts)
+                info.addView(tv("好感度 $heartStr  ($fav)", 13f, false, Color.parseColor("#FFC9C9")))
+                info.addView(tv("遊んだ回数 ${met}　勝利貢献 ${won}", 11f, false,
+                    Color.parseColor("#BFD0FF")))
+            }
+            row.addView(info)
+            cd.addView(row)
+
+            val sep = View(this)
+            sep.setBackgroundColor(Color.argb(40, 255, 255, 255))
+            cd.addView(sep, LinearLayout.LayoutParams(-1, dp(1)))
+        }
+
+        cd.addView(space(dp(14)))
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
         setScreen(pn)
     }
 
@@ -2006,7 +2405,13 @@ class MainActivity : Activity() {
             "・人狼チーム：人狼の人数が村人側の人数と同じになれば勝利。", 14f))
         cd.addView(space(dp(10)))
         cd.addView(tv("【構成（総数9人）】", 15f, true))
-        cd.addView(tv("村人 ×3 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2 / 狂人 ×1", 14f))
+        cd.addView(tv("村人 ×2 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2 / 狂人 ×1 / 妖狐 ×1", 14f))
+        cd.addView(space(dp(4)))
+        cd.addView(tv("⚙️ 難易度はタイトルで切替できます。むずかしいほどCPUの推理・連携が賢くなります（人狼が占い師を狙いやすく、名探偵への同調も強まります）。",
+            13f, false, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(4)))
+        cd.addView(tv("🦊 妖狐は第三陣営。占い師に占われると死にますが、人狼の襲撃では死にません。誰も勝敗が決まったときに生き残っていれば、妖狐だけの勝ちになります。",
+            13f, false, Color.parseColor("#E0A8FF")))
         cd.addView(space(dp(4)))
         cd.addView(tv("🌀 狂人は人間ですが人狼陣営。占いでは白（人狼ではない）と出ますが、人狼を勝たせようと動きます。人狼が誰かは知りません。",
             13f, false, Color.parseColor("#FFC98A")))
@@ -2021,6 +2426,8 @@ class MainActivity : Activity() {
     private fun startGame() {
         engine = GameEngine()
         engine.setup()
+        engine.difficulty = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+            .getInt("difficulty", 1)
         currentTalks = ArrayList()
         predictedWolves = LinkedHashSet()
         predictionActive = false
@@ -2040,8 +2447,12 @@ class MainActivity : Activity() {
         nm.gravity = Gravity.CENTER
         cd.addView(nm)
         cd.addView(space(dp(10)))
-        val roleT = tv("役職: ${h.role.jp}", 22f, true,
-            if (h.role.wolfSide) Color.parseColor("#FF9B9B") else Color.parseColor("#A8E6A1"))
+        val roleColor = when {
+            h.role.wolfSide -> Color.parseColor("#FF9B9B")
+            h.role == Role.FOX_SPIRIT -> Color.parseColor("#E0A8FF")
+            else -> Color.parseColor("#A8E6A1")
+        }
+        val roleT = tv("役職: ${h.role.jp}", 22f, true, roleColor)
         roleT.gravity = Gravity.CENTER
         cd.addView(roleT)
         cd.addView(tv(h.role.desc, 14f))
@@ -2054,6 +2465,10 @@ class MainActivity : Activity() {
             cd.addView(space(dp(6)))
             cd.addView(tv("🌀 あなたは狂人。人狼が誰かは分かりません。\n占いでは白（人狼ではない）と出ます。人狼が勝てば、あなたの勝ちです。",
                 14f, true, Color.parseColor("#FFC98A")))
+        } else if (h.role == Role.FOX_SPIRIT) {
+            cd.addView(space(dp(6)))
+            cd.addView(tv("🦊 あなたは妖狐。占い師に占われると死んでしまいます。処刑と占いにだけ気をつけて、最後まで生き残りましょう。",
+                14f, true, Color.parseColor("#E0A8FF")))
         }
         cd.addView(space(dp(16)))
         cd.addView(btn("1日目の昼へ", Color.parseColor("#D8703D")) {
@@ -2474,28 +2889,83 @@ class MainActivity : Activity() {
 
     private fun showGameOver(w: Int) {
         night = false
-        moodVictory = w    // 1=村人勝利→村人が喜ぶ / 2=人狼勝利→人狼が喜ぶ
+        moodVictory = w    // 1=村人 2=人狼 3=妖狐
         val e = engine
-        val humanWolfSide = e.human().role.wolfSide
-        val humanWin = (w == 1 && !humanWolfSide) || (w == 2 && humanWolfSide)
+        val h = e.human()
+        val humanWin = when (w) {
+            1 -> !h.role.wolfSide && h.role != Role.FOX_SPIRIT
+            2 -> h.role.wolfSide
+            3 -> h.role == Role.FOX_SPIRIT
+            else -> false
+        }
 
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
-        sp.edit()
+        val editor = sp.edit()
             .putInt("games", sp.getInt("games", 0) + 1)
             .putInt("wins", sp.getInt("wins", 0) + if (humanWin) 1 else 0)
-            .apply()
+        // 図鑑：登場キャラの「遊んだ回数」+1。勝った陣営に属して生き残ったキャラは「勝利貢献」+1
+        for (p2 in e.players) {
+            val idx = p2.animal.ordinal
+            editor.putInt("met_$idx", sp.getInt("met_$idx", 0) + 1)
+            val contributed = p2.alive && when (w) {
+                1 -> !p2.role.wolfSide && p2.role != Role.FOX_SPIRIT
+                2 -> p2.role.wolfSide
+                3 -> p2.role == Role.FOX_SPIRIT
+                else -> false
+            }
+            if (contributed) editor.putInt("won_$idx", sp.getInt("won_$idx", 0) + 1)
+        }
+
+        // 役職図鑑：あなたの役職を解放
+        editor.putBoolean("role_seen_${h.role.name}", true)
+
+        // 実績の達成判定
+        val totalGames = sp.getInt("games", 0) + 1
+        val newlyUnlocked = ArrayList<String>()
+        fun ach(id: String, name: String, cond: Boolean) {
+            if (cond && !sp.getBoolean("ach_$id", false)) {
+                editor.putBoolean("ach_$id", true)
+                newlyUnlocked.add(name)
+            }
+        }
+        ach("first_win", "はじめての勝利", humanWin)
+        ach("win_villager", "村の守り手", humanWin && !h.role.wolfSide && h.role != Role.FOX_SPIRIT)
+        ach("win_wolf", "月夜の狩人", humanWin && h.role.wolfSide)
+        ach("win_fox", "闇に紛れし者", humanWin && h.role == Role.FOX_SPIRIT)
+        ach("win_seer", "千里眼", humanWin && h.role == Role.SEER)
+        ach("detective", "名探偵", e.detectiveId == e.humanId)
+        ach("survivor", "生存者", humanWin && h.alive)
+        ach("play10", "村の常連", totalGames >= 10)
+        val allSeen = Role.values().all {
+            it == h.role || sp.getBoolean("role_seen_${it.name}", false)
+        }
+        ach("all_roles", "役者そろい踏み", allSeen)
+
+        editor.apply()
 
         val pn = panel()
         val cd = card()
-        val wt = tv(
-            if (w == 1) "🎉 村人チームの勝利！" else "🐺 人狼チームの勝利！",
-            22f, true,
-            if (w == 1) Color.parseColor("#A8E6A1") else Color.parseColor("#FF9B9B"))
+        val (winText, winColor) = when (w) {
+            1 -> "🎉 村人チームの勝利！" to Color.parseColor("#A8E6A1")
+            2 -> "🐺 人狼チームの勝利！" to Color.parseColor("#FF9B9B")
+            else -> "🦊 妖狐の勝利！" to Color.parseColor("#E0A8FF")
+        }
+        val wt = tv(winText, 22f, true, winColor)
         wt.gravity = Gravity.CENTER
         cd.addView(wt)
+        if (w == 3) {
+            cd.addView(tv("闇に紛れた妖狐が、最後まで生き残った…", 13f, false, Color.parseColor("#E0A8FF")))
+        }
         val ht = tv(if (humanWin) "あなたの勝ちです！" else "あなたの負けです…", 16f, true)
         ht.gravity = Gravity.CENTER
         cd.addView(ht)
+        if (newlyUnlocked.isNotEmpty()) {
+            cd.addView(space(dp(8)))
+            cd.addView(tv("🏅 実績を解放しました！", 14f, true, Color.parseColor("#FFE28A")))
+            for (nm in newlyUnlocked) {
+                cd.addView(tv("　・$nm", 13f, true, Color.parseColor("#FFD08A")))
+            }
+        }
         cd.addView(space(dp(12)))
         cd.addView(tv("【役職公開】", 14f, true, Color.parseColor("#FFE28A")))
         for (p2 in e.players) {
@@ -2506,10 +2976,15 @@ class MainActivity : Activity() {
                 when {
                     p2.role.isWolf -> Color.parseColor("#FF9B9B")
                     p2.role == Role.MADMAN -> Color.parseColor("#FFC98A")
+                    p2.role == Role.FOX_SPIRIT -> Color.parseColor("#E0A8FF")
                     else -> Color.WHITE
                 }))
         }
         cd.addView(space(dp(16)))
+        cd.addView(btn("🎬 リプレイ（試合をふりかえる）", Color.parseColor("#3D6BD8")) {
+            showReplay()
+        })
+        cd.addView(space(dp(8)))
         if (predictionActive && predictedWolves.size == 2) {
             cd.addView(btn("🔍 人狼予想の答え合わせ", Color.parseColor("#7A4FD8")) {
                 showPredictionResult()
@@ -2519,6 +2994,80 @@ class MainActivity : Activity() {
         cd.addView(btn("もう一度あそぶ", Color.parseColor("#D8703D")) { startGame() })
         cd.addView(space(dp(8)))
         cd.addView(btn("タイトルへ") { showTitle() })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    // ---------- リプレイ（全ログ・真相確認） ----------
+
+    private fun showReplay() {
+        val e = engine
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🎬 リプレイ", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("この試合のすべての記録と真相", 12f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(10)))
+
+        // 真相：各キャラの正体
+        cd.addView(tv("🎭 正体", 15f, true, Color.parseColor("#FFD08A")))
+        for (p2 in e.players) {
+            val col = when {
+                p2.role.isWolf -> Color.parseColor("#FF9B9B")
+                p2.role == Role.MADMAN -> Color.parseColor("#FFC98A")
+                p2.role == Role.FOX_SPIRIT -> Color.parseColor("#E0A8FF")
+                else -> Color.parseColor("#C8F0C2")
+            }
+            val you = if (p2.id == e.humanId) "（あなた）" else ""
+            cd.addView(tv("・${p2.pname}$you = ${p2.role.jp}" + if (!p2.alive) " †" else "", 13f, false, col))
+        }
+        cd.addView(space(dp(10)))
+
+        // 時系列の出来事（能力・襲撃・処刑）
+        cd.addView(tv("📖 試合の流れ", 15f, true, Color.parseColor("#A8D8FF")))
+        if (e.noteAbilities.isEmpty()) {
+            cd.addView(tv("記録なし", 13f, false, Color.parseColor("#9AA0B5")))
+        } else {
+            for (line in e.noteAbilities) cd.addView(tv("・$line", 13f))
+        }
+        cd.addView(space(dp(10)))
+
+        // 投票の記録
+        cd.addView(tv("⚖️ 投票の記録", 15f, true, Color.parseColor("#FFD08A")))
+        if (e.noteVotes.isEmpty()) {
+            cd.addView(tv("投票なし", 13f, false, Color.parseColor("#9AA0B5")))
+        } else {
+            val byDay = e.noteVotes.groupBy { it.first }
+            for ((day, list) in byDay.toSortedMap()) {
+                cd.addView(tv("${day}日目", 13f, true, Color.parseColor("#FFE28A")))
+                for ((_, voter, target) in list) {
+                    // 真相込みで、人狼に入れた票には🐺を付ける
+                    val mark = if (e.players[target].role.isWolf) " 🐺的中" else ""
+                    cd.addView(tv("　${e.players[voter].pname} → ${e.players[target].pname}$mark", 13f))
+                }
+            }
+        }
+        cd.addView(space(dp(10)))
+
+        // 発言の記録（疑い/信頼）
+        cd.addView(tv("💬 発言の記録", 15f, true, Color.parseColor("#A8E6A1")))
+        if (e.noteTalks.isEmpty()) {
+            cd.addView(tv("発言なし", 13f, false, Color.parseColor("#9AA0B5")))
+        } else {
+            var curDay = -1
+            for ((day, t) in e.noteTalks) {
+                if (day != curDay) {
+                    cd.addView(tv("${day}日目", 13f, true, Color.parseColor("#FFE28A")))
+                    curDay = day
+                }
+                val arrow = if (t.suspect) "🐺疑" else "🤝信"
+                val col = if (t.suspect) Color.parseColor("#FFC9C9") else Color.parseColor("#C8F0C2")
+                cd.addView(tv("　$arrow ${e.players[t.speakerId].pname} → ${e.players[t.targetId].pname}",
+                    12f, false, col))
+            }
+        }
+
+        cd.addView(space(dp(14)))
+        cd.addView(btn("結果にもどる", Color.parseColor("#D8703D")) { showGameOver(moodVictory) })
         pn.addView(cd)
         setScreen(pn)
     }
