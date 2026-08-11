@@ -1616,7 +1616,7 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    private fun setScreen(content: View) {
+    private fun setScreen(content: View, scrollToBottom: Boolean = false) {
         root.removeAllViews()
         val theme = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
             .getString("bg_theme", "normal") ?: "normal"
@@ -1625,6 +1625,9 @@ class MainActivity : Activity() {
         sc.isFillViewport = true
         sc.addView(content)
         root.addView(sc, FrameLayout.LayoutParams(-1, -1))
+        if (scrollToBottom) {
+            sc.post { sc.fullScroll(View.FOCUS_DOWN) }
+        }
     }
 
     private fun panel(): LinearLayout {
@@ -2142,7 +2145,19 @@ class MainActivity : Activity() {
             t.text.contains("信用") || t.text.contains("信頼") || t.text.contains("♪") -> 1
             else -> 0
         }
-        left.addView(cvv, LinearLayout.LayoutParams(dp(52), dp(52)))
+        // 番号オプションON時は、話しているキャラにも固定番号を重ねる
+        if (optNumbering) {
+            val stack = FrameLayout(this)
+            stack.addView(cvv, FrameLayout.LayoutParams(dp(52), dp(52)))
+            val num = "①②③④⑤⑥⑦⑧⑨".getOrNull(sp.animal.ordinal)?.toString() ?: ""
+            val badge = tv(num, 17f, true, Color.parseColor("#FFE28A"))
+            val blp = FrameLayout.LayoutParams(-2, -2)
+            blp.gravity = Gravity.TOP or Gravity.START
+            stack.addView(badge, blp)
+            left.addView(stack, LinearLayout.LayoutParams(dp(52), dp(52)))
+        } else {
+            left.addView(cvv, LinearLayout.LayoutParams(dp(52), dp(52)))
+        }
         row.addView(left)
 
         // 右：吹き出し
@@ -3436,7 +3451,8 @@ class MainActivity : Activity() {
             cd.addView(space(dp(8)))
             cd.addView(tv("（${shown} / ${currentTalks.size} 人）", 12f, false, Color.parseColor("#BFD0FF")))
             pn.addView(cd)
-            setScreen(pn)
+            // 2人目以降は、直前の会話と「次へ」ボタンが見える位置（画面下）で固定する
+            setScreen(pn, shown > 1)
             return
         }
 
@@ -3491,7 +3507,8 @@ class MainActivity : Activity() {
             })
         }
         pn.addView(cd)
-        setScreen(pn)
+        // 1人ずつ送りのときは、会話の続きが見える画面下で固定する
+        setScreen(pn, optOnebyone && currentTalks.isNotEmpty())
     }
 
     private fun showVote() {

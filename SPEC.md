@@ -1,4 +1,4 @@
-# どうぶつ人狼（JinrouApp）仕様書 — v20 / versionCode 16 時点
+# どうぶつ人狼（JinrouApp）仕様書 — v21 / versionCode 17 時点
 
 別のチャットで開発を再開するときの引き継ぎ資料。
 **このSPEC.md と `app/src/main/java/com/sekiguchi/jinrou/MainActivity.kt` の全文を渡せば、同じ精度で続きができます。**
@@ -194,6 +194,7 @@ cd ~/JinrouApp && git add . && git commit -m "vN: 内容" && git push
 | v4 | やられた画面に3択（観戦/人狼予想して観戦/終了）。予想の答え合わせ画面。全選択画面を固定3×3配置に。村の状況カード |
 | v5 | パンダ→コアラに変更、アイコンもコアラ化。自由会話＋説得システム。名探偵システム（村人側の勝率改善） |
 | v6 | アイコンを「夜の一軒家（窓に灯り）」に変更。SPEC.mdをリポジトリに追加 |
+| v21 | バグ修正2件。①番号オプションON時、会話の吹き出しの話者アイコンにも固定番号を表示（`talkBubble`をFrameLayoutでラップしバッジを重ねる。従来は`charCell`のグリッドのみ番号が付いていた）②1人ずつ送りオプションで「次へ」のたび画面が先頭に戻る問題を修正（`setScreen`に`scrollToBottom`引数を追加し`fullScroll(FOCUS_DOWN)`で画面下に固定）|
 | v20 | ⚙️オプション画面新設（ルールトグルを集約）。5つの表示オプション：①動物に固定番号①〜⑨（`opt_numbering`、charCellにバッジ）②生存数カウンター（人狼/それ以外の残り数を昼上部に、`opt_counter`既定ON）③会話ごとのAI分析図（相関図を昼に埋込、`opt_analysis`）④人狼有利率をAI推論表示（`wolfAdvantage`＋バー、`opt_winrate`）⑤会話を1人ずつ送り（`opt_onebyone`＋`talkReveal`で「次へ」送り）|
 | v19 | 恋人ルール（トグル `lovers_rule`/`loversRule`）：ランダム2人が恋人（役職と別軸、`loverIds`）。片方が死ぬともう片方も後追い（`applyHeartbreak`、夜・処刑後に発火）、2人だけ生き残れば陣営無視で恋人勝利。`winner()`に戻り値4を追加、役職確認で相手表示、結果/表情/好感度/コインも対応。エンディング図鑑（🏁）：勝敗4種の到達を`ending_N`で記録しシルエット→解放表示 |
 | v18 | 共有者（MASON）追加：タイトルの「共有者ルール」ONで村人2枠→共有者2に（`mason_rule`/`masonRule`/`masonPartner`）。互いを知り疑わず投票せず、CPUは相方の白確を表明。役職確認で相方表示。役職別勝率統計：役職ごとのプレイ/勝利数（`rolep_`/`rolew_`）を記録し成績画面に「N勝/M戦(R%)」表示 |
