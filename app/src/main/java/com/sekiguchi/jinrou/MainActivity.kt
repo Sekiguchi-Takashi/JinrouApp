@@ -1397,12 +1397,12 @@ class TownView(context: Context, private val isNight: Boolean, private val theme
         }
 
         // 遠くの丘
-        p.color = cHill()
+        p.color = Color.parseColor(cHill())
         c.drawOval(RectF(-w * 0.3f, h * 0.42f, w * 0.7f, h * 0.62f), p)
         c.drawOval(RectF(w * 0.4f, h * 0.44f, w * 1.3f, h * 0.62f), p)
 
         // 地面
-        p.color = cGround()
+        p.color = Color.parseColor(cGround())
         c.drawRect(0f, h * 0.52f, w, h, p)
 
         // 雪テーマは地面に積雪の白を重ねる
