@@ -29,6 +29,7 @@ import kotlin.random.Random
 
 enum class Role(val jp: String, val desc: String, val isWolf: Boolean, val wolfSide: Boolean) {
     VILLAGER("村人", "特殊能力はありません。推理と投票で村を守りましょう。", false, false),
+    MASON("共有者", "もう1人の共有者が誰かを知っています。お互いに人狼ではないと確認できます。", false, false),
     SEER("占い師", "毎晩1人を占い、人狼かどうかを知ることができます。", false, false),
     MEDIUM("霊能者", "処刑された人が人狼だったかどうかを知ることができます。", false, false),
     HUNTER("狩人", "毎晩1人を護衛し、人狼の襲撃から守ります。", false, false),
@@ -206,12 +207,38 @@ class GameEngine {
     fun human() = players[humanId]
     fun alive() = players.filter { it.alive }
 
+    var masonRule = false   // Activity側から注入。ONなら村人2枠が共有者2になる
+    var loversRule = false  // Activity側から注入。ONならランダム2人が恋人になる
+    val loverIds = ArrayList<Int>()   // 恋人2人のid（loversRule時）
+
+    fun isLover(p: Player) = loverIds.contains(p.id)
+    fun loverPartner(p: Player): Player? =
+        if (isLover(p)) players.firstOrNull { loverIds.contains(it.id) && it.id != p.id } else null
+
+    // 恋人の後追い：片方が死んだらもう片方も死ぬ。死んだ相方の名前を返す（ログ用）
+    fun applyHeartbreak(): Player? {
+        if (!loversRule || loverIds.size < 2) return null
+        val a = players[loverIds[0]]
+        val b = players[loverIds[1]]
+        if (a.alive != b.alive) {
+            val survivor = if (a.alive) a else b
+            survivor.alive = false
+            return survivor
+        }
+        return null
+    }
+
+    // 共有者の相方（自分以外の共有者）
+    fun masonPartner(p: Player): Player? =
+        if (p.role == Role.MASON) players.firstOrNull { it.role == Role.MASON && it.id != p.id } else null
+
     fun setup() {
         players.clear()
         val animals = Animal.values()
         for (i in 0 until N) players.add(Player(i, NAMES[i], animals[i]))
+        val villagerRole = if (masonRule) Role.MASON else Role.VILLAGER
         val roles = mutableListOf(
-            Role.VILLAGER, Role.VILLAGER,
+            villagerRole, villagerRole,
             Role.SEER, Role.MEDIUM, Role.HUNTER,
             Role.WEREWOLF, Role.WEREWOLF, Role.MADMAN,
             Role.FOX_SPIRIT
@@ -220,14 +247,26 @@ class GameEngine {
         for (i in 0 until N) players[i].role = roles[i]
         humanId = Random.nextInt(N)
         dayCount = 1   // 1日目は昼の話し合いから始まる
+
+        loverIds.clear()
+        if (loversRule) {
+            val ids = (0 until N).shuffled().take(2)
+            loverIds.addAll(ids)
+        }
     }
 
-    // 0=続行 1=村人チーム勝利 2=人狼チーム勝利 3=妖狐勝利
+    // 0=続行 1=村人チーム勝利 2=人狼チーム勝利 3=妖狐勝利 4=恋人勝利
     fun winner(): Int {
-        val foxAlive = alive().any { it.role == Role.FOX_SPIRIT }
-        val wolves = alive().count { it.role.isWolf }
+        val living = alive()
+        // 恋人勝利：生き残っているのが恋人2人だけになったら恋人の勝ち
+        if (loversRule && loverIds.size == 2 && living.size == 2 &&
+            living.all { loverIds.contains(it.id) }) {
+            return 4
+        }
+        val foxAlive = living.any { it.role == Role.FOX_SPIRIT }
+        val wolves = living.count { it.role.isWolf }
         // 妖狐は「人狼陣営でも村人陣営でもない」ので、生存者数の勝敗カウントから除外する
-        val nonFox = alive().filter { it.role != Role.FOX_SPIRIT }
+        val nonFox = living.filter { it.role != Role.FOX_SPIRIT }
         val villagerSide = nonFox.count { !it.role.wolfSide }
         // 決着条件
         if (wolves == 0) {
@@ -357,6 +396,12 @@ class GameEngine {
                     morningLog.add("${players[humanId].pname} の予想（${exd.pname} が人狼）は外れだった…みんなの信用を失ってしまった。")
                 }
             }
+        }
+        // 恋人の後追い（襲撃・呪殺で片方が死んでいたら、もう片方も後を追う）
+        val heartbroken = applyHeartbreak()
+        if (heartbroken != null) {
+            morningLog.add("💔 ${heartbroken.pname} は最愛の人を失い、後を追ってしまった…")
+            noteAbilities.add("${dayCount}日目 💔 ${heartbroken.pname} が後追いで亡くなった（恋人）")
         }
         lastExecuted = null
     }
@@ -503,6 +548,15 @@ class GameEngine {
         if (detectiveId >= 0 && players[detectiveId].alive) {
             talks.add(0, Talk(detectiveId, "ふっふっふ…名探偵のぼくに任せたまえ！", detectiveId, false))
         }
+        // 共有者CPUは相方が生きていれば「白確」と表明することがある
+        for (p in av) {
+            if (p.id == humanId || p.role != Role.MASON) continue
+            val mate = masonPartner(p)
+            if (mate != null && mate.alive && Random.nextInt(100) < 45) {
+                talks.add(Talk(p.id, "ぼくと ${mate.pname} は共有者だよ。${mate.pname} は絶対に人狼じゃない！",
+                    mate.id, false))
+            }
+        }
         return talks
     }
 
@@ -584,7 +638,8 @@ class GameEngine {
             if (p.id == detectiveId) continue            // 名探偵はもう発言した
             if (seerClaimants.contains(p.id)) continue   // 占い師CO中は昼は静かに
             val suspects = av.filter {
-                it.id != p.id && (p.role != Role.WEREWOLF || !it.role.isWolf)
+                it.id != p.id && (p.role != Role.WEREWOLF || !it.role.isWolf) &&
+                    (p.role != Role.MASON || it.role != Role.MASON)   // 共有者は相方を疑わない
             }
             if (suspects.isEmpty()) continue
 
@@ -640,7 +695,10 @@ class GameEngine {
             }
             val cands0 = alive().filter { it.id != v.id }
             // 人狼・狂人（人狼陣営）は人狼に投票しない
-            val candsW = if (v.role.wolfSide) cands0.filter { !it.role.isWolf } else cands0
+            val candsW0 = if (v.role.wolfSide) cands0.filter { !it.role.isWolf } else cands0
+            // 共有者は相方に投票しない
+            val candsW = if (v.role == Role.MASON)
+                candsW0.filter { it.role != Role.MASON } else candsW0
             val cands = if (candsW.isNotEmpty()) candsW else cands0
             val pick = run {
                 // 名探偵本人は自分の予想に投票
@@ -708,6 +766,11 @@ class GameEngine {
         // 推理ノートに記録
         for ((voterId, targetId) in votes) noteVotes.add(Triple(dayCount, voterId, targetId))
         noteAbilities.add("${dayCount}日目 ⚖️ 投票の結果、${executed.pname} が処刑された")
+        // 恋人の後追い（処刑で片方が死んだら、もう片方も後を追う）
+        val heartbroken = applyHeartbreak()
+        if (heartbroken != null) {
+            noteAbilities.add("${dayCount}日目 💔 ${heartbroken.pname} が後追いで亡くなった（恋人）")
+        }
         return executed
     }
 
@@ -1604,6 +1667,7 @@ class MainActivity : Activity() {
         if (moodVictory == 1) return if (pl.role.wolfSide) 2 else if (pl.role == Role.FOX_SPIRIT) 2 else 1
         if (moodVictory == 2) return if (pl.role.wolfSide) 1 else 2
         if (moodVictory == 3) return if (pl.role == Role.FOX_SPIRIT) 1 else 2
+        if (moodVictory == 4) return if (engine.isLover(pl)) 1 else 2
         val e = engine
         // 名探偵は自信ありげに安心
         if (pl.id == e.detectiveId) return 6
@@ -2287,6 +2351,26 @@ class MainActivity : Activity() {
         pn.addView(diffBtn, LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
 
+        // 共有者ルールのON/OFF（村人2枠が共有者2になる）
+        val masonOn = sp.getBoolean("mason_rule", false)
+        val masonBtn = btn("共有者ルール: " + if (masonOn) "あり" else "なし",
+            Color.parseColor(if (masonOn) "#A8E6A1" else "#6B7280")) {
+            sp.edit().putBoolean("mason_rule", !masonOn).apply()
+            showTitle()
+        }
+        pn.addView(masonBtn, LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+
+        // 恋人ルールのON/OFF（ランダム2人が恋人になる）
+        val loversOn = sp.getBoolean("lovers_rule", false)
+        val loversBtn = btn("恋人ルール: " + if (loversOn) "あり" else "なし",
+            Color.parseColor(if (loversOn) "#FF9BD0" else "#6B7280")) {
+            sp.edit().putBoolean("lovers_rule", !loversOn).apply()
+            showTitle()
+        }
+        pn.addView(loversBtn, LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+
         pn.addView(btn("はじめる", Color.parseColor("#D8703D")) { startGame() },
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
@@ -2294,6 +2378,9 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
         pn.addView(btn("🎭 役職図鑑", Color.parseColor("#7A4FD8")) { showRoleZukan() },
+            LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+        pn.addView(btn("🏁 エンディング図鑑", Color.parseColor("#7A4FD8")) { showEndingZukan() },
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
         pn.addView(btn("🏅 実績", Color.parseColor("#3D6BD8")) { showAchievements() },
@@ -2406,8 +2493,15 @@ class MainActivity : Activity() {
         cd.addView(tv("経験した役職　$seenCount / ${Role.values().size} 種", 14f))
         for (r in Role.values()) {
             val seen = sp.getBoolean("role_seen_${r.name}", false)
-            cd.addView(tv((if (seen) "✔ " else "・ ") + r.jp, 13f, false,
-                if (seen) Color.parseColor("#C8F0C2") else Color.parseColor("#9AA0B5")))
+            if (seen) {
+                val rp = sp.getInt("rolep_${r.name}", 0)
+                val rw = sp.getInt("rolew_${r.name}", 0)
+                val rr = if (rp > 0) rw * 100 / rp else 0
+                cd.addView(tv("✔ ${r.jp}　${rw}勝/${rp}戦（$rr%）", 13f, false,
+                    Color.parseColor("#C8F0C2")))
+            } else {
+                cd.addView(tv("・ ${r.jp}", 13f, false, Color.parseColor("#9AA0B5")))
+            }
         }
         cd.addView(space(dp(12)))
 
@@ -2423,6 +2517,51 @@ class MainActivity : Activity() {
     }
 
     // ---------- 役職図鑑 ----------
+
+    // ---------- エンディング図鑑 ----------
+
+    private fun showEndingZukan() {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🏁 エンディング図鑑", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("たどり着いた結末を集めよう", 12f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(10)))
+
+        // (勝敗コード, 絵文字, 名前, 説明)
+        val endings = listOf(
+            listOf("1", "🎉", "村の平和", "人狼をすべて追放し、村に平和が戻った。"),
+            listOf("2", "🐺", "闇夜の勝利", "人狼が村を支配した。"),
+            listOf("3", "🦊", "妖狐の暗躍", "第三勢力・妖狐が最後まで生き残った。"),
+            listOf("4", "💕", "永遠の恋", "恋人2人だけが生き残り、幸せをつかんだ。")
+        )
+        val got = endings.count { sp.getBoolean("ending_${it[0]}", false) }
+        cd.addView(tv("収集 $got / ${endings.size}", 13f, true, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(8)))
+
+        for (e in endings) {
+            val seen = sp.getBoolean("ending_${e[0]}", false)
+            val box = card()
+            if (seen) {
+                box.addView(tv("${e[1]} ${e[2]}", 16f, true, Color.parseColor("#FFE28A")))
+                box.addView(tv(e[3], 13f))
+            } else {
+                box.addView(tv("🔒 ？？？", 16f, true, Color.parseColor("#6B7280")))
+                box.addView(tv("まだ見ていないエンディング", 13f, false, Color.parseColor("#9AA0B5")))
+            }
+            cd.addView(box)
+            cd.addView(space(dp(8)))
+        }
+        if (!sp.getBoolean("ending_4", false)) {
+            cd.addView(tv("💡 ヒント: 恋人ルールをONにすると、新しい結末が待っているかも？",
+                12f, false, Color.parseColor("#FF9BD0")))
+            cd.addView(space(dp(6)))
+        }
+
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
+        setScreen(pn)
+    }
 
     private fun showRoleZukan() {
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
@@ -2756,6 +2895,9 @@ class MainActivity : Activity() {
         cd.addView(tv("【構成（総数9人）】", 15f, true))
         cd.addView(tv("村人 ×2 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2 / 狂人 ×1 / 妖狐 ×1", 14f))
         cd.addView(space(dp(4)))
+        cd.addView(tv("🤝 タイトルで「共有者ルール」をONにすると、村人2枠が共有者2人になります。共有者はお互いが誰か分かり、確実に人狼ではないと確認し合えます（村人陣営が有利になります）。",
+            13f, false, Color.parseColor("#A8E6A1")))
+        cd.addView(space(dp(4)))
         cd.addView(tv("⚙️ 難易度はタイトルで切替できます。むずかしいほどCPUの推理・連携が賢くなります（人狼が占い師を狙いやすく、名探偵への同調も強まります）。",
             13f, false, Color.parseColor("#FFE28A")))
         cd.addView(space(dp(4)))
@@ -2777,6 +2919,8 @@ class MainActivity : Activity() {
         engine.setup()
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
         engine.difficulty = sp.getInt("difficulty", 1)
+        engine.masonRule = sp.getBoolean("mason_rule", false)
+        engine.loversRule = sp.getBoolean("lovers_rule", false)
         // 各キャラの好感度（遊んだ回数・勝利貢献・プレゼント）をエンジンへ注入
         for (i in Animal.values().indices) {
             engine.favByAnimal[i] = favValue(sp, i)
@@ -2830,6 +2974,22 @@ class MainActivity : Activity() {
             cd.addView(space(dp(6)))
             cd.addView(tv("🦊 あなたは妖狐。占い師に占われると死んでしまいます。処刑と占いにだけ気をつけて、最後まで生き残りましょう。",
                 14f, true, Color.parseColor("#E0A8FF")))
+        } else if (h.role == Role.MASON) {
+            val mate = engine.masonPartner(h)
+            cd.addView(space(dp(6)))
+            if (mate != null) {
+                cd.addView(tv("🤝 もう1人の共有者: ${mate.pname}（${mate.animal.jp}）\n${mate.pname} は人狼ではないと確定しています。協力しましょう。",
+                    15f, true, Color.parseColor("#A8E6A1")))
+            }
+        }
+        // 恋人（役職とは別軸）
+        if (engine.isLover(h)) {
+            val lover = engine.loverPartner(h)
+            if (lover != null) {
+                cd.addView(space(dp(6)))
+                cd.addView(tv("💕 あなたの恋人: ${lover.pname}（${lover.animal.jp}）\n2人だけが最後まで生き残れば、陣営に関係なく恋人の勝利！ただし相手が死ぬと、あなたも後を追ってしまいます。",
+                    14f, true, Color.parseColor("#FF9BD0")))
+            }
         }
         cd.addView(space(dp(16)))
         cd.addView(btn("1日目の昼へ", Color.parseColor("#D8703D")) {
@@ -3256,9 +3416,10 @@ class MainActivity : Activity() {
         val e = engine
         val h = e.human()
         val humanWin = when (w) {
-            1 -> !h.role.wolfSide && h.role != Role.FOX_SPIRIT
-            2 -> h.role.wolfSide
+            1 -> !h.role.wolfSide && h.role != Role.FOX_SPIRIT && !e.isLover(h)
+            2 -> h.role.wolfSide && !e.isLover(h)
             3 -> h.role == Role.FOX_SPIRIT
+            4 -> e.isLover(h)
             else -> false
         }
 
@@ -3274,6 +3435,7 @@ class MainActivity : Activity() {
                 1 -> !p2.role.wolfSide && p2.role != Role.FOX_SPIRIT
                 2 -> p2.role.wolfSide
                 3 -> p2.role == Role.FOX_SPIRIT
+                4 -> e.isLover(p2)
                 else -> false
             }
             if (contributed) editor.putInt("won_$idx", sp.getInt("won_$idx", 0) + 1)
@@ -3281,6 +3443,11 @@ class MainActivity : Activity() {
 
         // 役職図鑑：あなたの役職を解放
         editor.putBoolean("role_seen_${h.role.name}", true)
+        // エンディング図鑑：勝敗種別を記録（1村/2狼/3狐/4恋人）
+        editor.putBoolean("ending_$w", true)
+        // 役職別の統計（あなたが担当した役職のプレイ数・勝利数）
+        editor.putInt("rolep_${h.role.name}", sp.getInt("rolep_${h.role.name}", 0) + 1)
+        if (humanWin) editor.putInt("rolew_${h.role.name}", sp.getInt("rolew_${h.role.name}", 0) + 1)
 
         // 連勝ストリークの更新
         val prevStreak = sp.getInt("win_streak", 0)
@@ -3324,13 +3491,19 @@ class MainActivity : Activity() {
         val (winText, winColor) = when (w) {
             1 -> "🎉 村人チームの勝利！" to Color.parseColor("#A8E6A1")
             2 -> "🐺 人狼チームの勝利！" to Color.parseColor("#FF9B9B")
-            else -> "🦊 妖狐の勝利！" to Color.parseColor("#E0A8FF")
+            3 -> "🦊 妖狐の勝利！" to Color.parseColor("#E0A8FF")
+            else -> "💕 恋人の勝利！" to Color.parseColor("#FF9BD0")
         }
         val wt = tv(winText, 22f, true, winColor)
         wt.gravity = Gravity.CENTER
         cd.addView(wt)
         if (w == 3) {
             cd.addView(tv("闇に紛れた妖狐が、最後まで生き残った…", 13f, false, Color.parseColor("#E0A8FF")))
+        }
+        if (w == 4) {
+            val lovers = e.loverIds.map { e.players[it].pname }
+            cd.addView(tv("💕 ${lovers.joinToString("と")} は最後まで寄り添い、2人だけの世界を手に入れた…",
+                13f, false, Color.parseColor("#FF9BD0")))
         }
         val ht = tv(if (humanWin) "あなたの勝ちです！" else "あなたの負けです…", 16f, true)
         ht.gravity = Gravity.CENTER
