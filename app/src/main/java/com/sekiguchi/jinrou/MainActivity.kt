@@ -37,10 +37,10 @@ enum class Role(val jp: String, val desc: String, val isWolf: Boolean, val wolfS
     FOX_SPIRIT("妖狐", "第三陣営。占われると死にますが、人狼の襲撃では死にません。最後まで生き残れば、あなただけの勝利です。", false, false)
 }
 
-enum class Animal(val jp: String) {
-    RABBIT("うさぎ"), FOX("きつね"), CAT("ねこ"), DOG("いぬ"),
-    BEAR("くま"), OWL("ふくろう"), SQUIRREL("りす"),
-    KOALA("こあら"), PENGUIN("ぺんぎん")
+enum class Animal(val jp: String, val persona: String) {
+    RABBIT("うさぎ", "しっかり"), FOX("きつね", "クール"), CAT("ねこ", "きまぐれ"), DOG("いぬ", "げんき"),
+    BEAR("くま", "おっとり"), OWL("ふくろう", "ものしり"), SQUIRREL("りす", "しんぱいしょう"),
+    KOALA("こあら", "マイペース"), PENGUIN("ぺんぎん", "れいせい")
 }
 
 class Player(val id: Int, val pname: String, val animal: Animal) {
@@ -68,6 +68,9 @@ class GameEngine {
 
     // 難易度（0=やさしい / 1=ふつう / 2=むずかしい）。CPUの賢さに影響
     var difficulty = 1
+    // 各キャラ（animal index）の好感度0-100。Activity側でSharedPreferencesから注入する
+    val favByAnimal = HashMap<Int, Int>()
+    fun favOf(pl: Player): Int = favByAnimal[pl.animal.ordinal] ?: 0
     val wolfSeerTargetRate get() = when (difficulty) { 0 -> 50; 1 -> 70; else -> 88 }   // 人狼が本物占い師を狙う率
     val fakeSeerRate get() = when (difficulty) { 0 -> 40; 1 -> 55; else -> 72 }         // 偽占い師が名乗り出る率
     val detectiveFollowRate get() = when (difficulty) { 0 -> 68; 1 -> 85; else -> 94 }  // 名探偵の予想に投票同調する率
@@ -121,6 +124,65 @@ class GameEngine {
         mostSuspectedIds = ArrayList(
             count.entries.sortedByDescending { it.value }.take(2)
                 .filter { it.value > 0 }.map { it.key })
+    }
+
+    // AIアシスタント：見えている情報から推理のヒントを組み立てる
+    fun buildHints(): List<String> {
+        val hints = ArrayList<String>()
+        val claimAlive = seerClaimants.map { players[it] }.filter { it.alive }
+
+        // 占い師CO状況
+        when {
+            claimAlive.size >= 2 -> {
+                hints.add("⚠️ 占い師が${claimAlive.size}人います（${claimAlive.joinToString("、") { it.pname }}）。" +
+                    "どちらかは必ず偽物（人狼か狂人）です。両者の主張の食い違いに注目しましょう。")
+                // 2人が同じ相手を白黒逆に言っていれば矛盾を指摘
+                if (publicBlack.isNotEmpty() && publicWhite.isNotEmpty()) {
+                    val both = publicBlack.intersect(publicWhite)
+                    if (both.isNotEmpty()) {
+                        hints.add("🔎 ${both.joinToString("、") { players[it].pname }} は「人狼」と「人狼ではない」の両方の判定が出ています。占い師のどちらかが嘘をついています。")
+                    }
+                }
+            }
+            claimAlive.size == 1 -> {
+                hints.add("🔮 占い師を名乗っているのは ${claimAlive[0].pname} だけです。本物なら判定は信頼でき、偽物（人狼陣営）なら要注意。護衛や投票の判断材料にしましょう。")
+            }
+            else -> {
+                hints.add("🤔 まだ誰も占い師と名乗り出ていません。占い師が隠れているか、初日に襲撃・処刑された可能性があります。")
+            }
+        }
+
+        // 黒判定
+        if (publicBlack.isNotEmpty()) {
+            val names = publicBlack.filter { players[it].alive }.map { players[it].pname }
+            if (names.isNotEmpty())
+                hints.add("⚫ 「人狼」と占われているのは ${names.joinToString("、")}。ただし偽占い師による濡れ衣の可能性もあります。")
+        }
+        // 白判定
+        if (publicWhite.isNotEmpty()) {
+            val names = publicWhite.filter { players[it].alive }.map { players[it].pname }
+            if (names.isNotEmpty())
+                hints.add("⚪ 「人狼ではない」と占われているのは ${names.joinToString("、")}。本物の占い師の白なら信頼できます。")
+        }
+
+        // 最多疑われ
+        if (mostSuspectedIds.isNotEmpty()) {
+            val names = mostSuspectedIds.map { players[it].pname }
+            hints.add("👀 今もっとも疑われているのは ${names.joinToString("、")}。流れに乗るか、別の視点で守るかを考えましょう。")
+        }
+
+        // 名探偵
+        if (detectiveId >= 0 && players[detectiveId].alive) {
+            hints.add("🎩 ${players[detectiveId].pname} は名探偵です。多くの村人が予想に同調します。違うと思うなら名探偵を説得すると流れを変えられます。")
+        }
+
+        // 残り人数の緊張度
+        if (alive().size <= 5) {
+            hints.add("⏳ 残り${alive().size}人。もう吊り間違いは許されません。確定情報を最優先に。")
+        }
+
+        if (hints.isEmpty()) hints.add("まだ手がかりが少ないです。まずは自由会話で情報を集めましょう。")
+        return hints
     }
 
     val morningLog = ArrayList<String>()
@@ -401,21 +463,40 @@ class GameEngine {
             if (p.id == humanId) continue
             val others = av.filter { it.id != p.id }
             if (others.isEmpty()) continue
+            val persona = p.animal.persona
             val r = Random.nextInt(100)
             when {
                 r < 18 -> { /* あえて無言 */ }
-                r < 40 -> talks.add(Talk(p.id, "ぼくは人狼じゃないよ！ほんとだよ！", p.id, false))
+                r < 40 -> talks.add(Talk(p.id, when (persona) {
+                    "げんき" -> "ぼくは絶対に人狼じゃないよ！信じて！"
+                    "クール" -> "……言っておくが、私は人狼ではない。"
+                    "しんぱいしょう" -> "ぼ、ぼくは人狼じゃないよぉ…疑わないで…"
+                    "れいせい" -> "私は人狼ではありません。冷静に考えてください。"
+                    else -> "ぼくは人狼じゃないよ！ほんとだよ！"
+                }, p.id, false))
                 r < 58 -> {
                     val t = others.random()
-                    talks.add(Talk(p.id, "${t.pname} は信用できると思うんだ。", t.id, false))
+                    talks.add(Talk(p.id, when (persona) {
+                        "ものしり" -> "${t.pname} の発言には筋が通っている。信用できるね。"
+                        "おっとり" -> "${t.pname} は…なんだか、いい人そうだねぇ。"
+                        else -> "${t.pname} は信用できると思うんだ。"
+                    }, t.id, false))
                 }
                 r < 76 -> {
                     val t = others.random()
-                    talks.add(Talk(p.id, "${t.pname} が占い師なんじゃないかな？", t.id, false))
+                    talks.add(Talk(p.id, when (persona) {
+                        "ものしり" -> "推理するに、${t.pname} が占い師の可能性が高い。"
+                        "きまぐれ" -> "なんとなくだけど、${t.pname} が占い師な気がするニャ。"
+                        else -> "${t.pname} が占い師なんじゃないかな？"
+                    }, t.id, false))
                 }
                 else -> {
                     val t = others.random()
-                    talks.add(Talk(p.id, "狩人は ${t.pname} っぽい気がする。", t.id, false))
+                    talks.add(Talk(p.id, when (persona) {
+                        "しっかり" -> "狩人は ${t.pname} だと見ているわ。"
+                        "マイペース" -> "狩人…？ん〜、${t.pname} かなぁ…"
+                        else -> "狩人は ${t.pname} っぽい気がする。"
+                    }, t.id, false))
                 }
             }
         }
@@ -450,7 +531,9 @@ class GameEngine {
                 "へえ…${target.pname} が人狼ねえ。……おもしろいこと言うんだね、キミ。",
                 target.id, false)
         }
-        return if (Random.nextInt(100) < 70) {
+        // 好感度が高いほど、あなたの説得を受け入れやすい（+0〜+25%）
+        val favBonus = favOf(listener) / 4
+        return if (Random.nextInt(100) < 70 + favBonus) {
             persuaded[listener.id] = target.id
             if (listener.id == detectiveId) {
                 Talk(listener.id, "なるほど…名探偵のカンにビビッときた。${target.pname} が怪しいぞ！",
@@ -584,7 +667,18 @@ class GameEngine {
                 val notWhite = cands.filter { !publicWhite.contains(it.id) && !seerClaimants.contains(it.id) }
                 if (notWhite.isNotEmpty()) notWhite.random() else cands.random()
             }
-            votes[v.id] = pick.id
+            // 好感度が高いキャラは、あなたに入れそうになっても別の相手に振り替える（かばう）
+            var finalPick = pick
+            if (finalPick.id == humanId && !v.role.wolfSide) {
+                val favor = favOf(v)
+                if (favor > 0 && Random.nextInt(100) < favor / 2) {   // 好感度100で最大50%かばう
+                    val alt = cands.filter { it.id != humanId }
+                        .filter { !publicWhite.contains(it.id) && !seerClaimants.contains(it.id) }
+                    val altPick = alt.randomOrNull() ?: cands.filter { it.id != humanId }.randomOrNull()
+                    if (altPick != null) finalPick = altPick
+                }
+            }
+            votes[v.id] = finalPick.id
         }
         lastVotes = votes
 
@@ -1234,9 +1328,35 @@ class SummaryView(context: Context, private val engine: GameEngine,
 // ドラクエ風の街の背景（昼/夜）
 // =====================================================
 
-class TownView(context: Context, private val isNight: Boolean) : View(context) {
+class TownView(context: Context, private val isNight: Boolean, private val theme: String = "normal") : View(context) {
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    // テーマ別の色（昼/夜それぞれ）
+    private fun cSkyTop() = when (theme) {
+        "dusk" -> if (isNight) "#3A1E4A" else "#F49B6B"
+        "snow" -> if (isNight) "#1A2A4A" else "#BFE0F2"
+        "sakura" -> if (isNight) "#2A1830" else "#F7C8DD"
+        else -> if (isNight) "#0B1035" else "#7EC8F2"
+    }
+    private fun cSkyBot() = when (theme) {
+        "dusk" -> if (isNight) "#5A2E5A" else "#FBD9A8"
+        "snow" -> if (isNight) "#2A3A5A" else "#EAF6FC"
+        "sakura" -> if (isNight) "#4A2A50" else "#FCE4EF"
+        else -> if (isNight) "#25306B" else "#CDEDFB"
+    }
+    private fun cHill() = when (theme) {
+        "dusk" -> if (isNight) "#3A2450" else "#C77A5A"
+        "snow" -> if (isNight) "#2A3A5A" else "#DCEAF2"
+        "sakura" -> if (isNight) "#3A2445" else "#D99CBE"
+        else -> if (isNight) "#1B2450" else "#9CCB86"
+    }
+    private fun cGround() = when (theme) {
+        "dusk" -> if (isNight) "#2E2438" else "#8A6A4A"
+        "snow" -> if (isNight) "#3A4A5A" else "#E8F2F8"
+        "sakura" -> if (isNight) "#2E2438" else "#8FB36A"
+        else -> if (isNight) "#2E3B33" else "#79B364"
+    }
 
     override fun onDraw(c: Canvas) {
         super.onDraw(c)
@@ -1246,8 +1366,8 @@ class TownView(context: Context, private val isNight: Boolean) : View(context) {
         val rnd = Random(7)
 
         // 空
-        val skyTop = if (isNight) Color.parseColor("#0B1035") else Color.parseColor("#7EC8F2")
-        val skyBot = if (isNight) Color.parseColor("#25306B") else Color.parseColor("#CDEDFB")
+        val skyTop = Color.parseColor(cSkyTop())
+        val skyBot = Color.parseColor(cSkyBot())
         p.shader = LinearGradient(0f, 0f, 0f, h * 0.55f, skyTop, skyBot, Shader.TileMode.CLAMP)
         c.drawRect(0f, 0f, w, h * 0.55f, p)
         p.shader = null
@@ -1256,7 +1376,7 @@ class TownView(context: Context, private val isNight: Boolean) : View(context) {
             // 月と星
             p.color = Color.parseColor("#FFF6C9")
             c.drawCircle(w * 0.8f, h * 0.12f, w * 0.07f, p)
-            p.color = Color.parseColor("#1A2255")
+            p.color = skyTop
             c.drawCircle(w * 0.8f - w * 0.028f, h * 0.11f, w * 0.055f, p)
             p.color = Color.WHITE
             repeat(45) {
@@ -1277,13 +1397,19 @@ class TownView(context: Context, private val isNight: Boolean) : View(context) {
         }
 
         // 遠くの丘
-        p.color = if (isNight) Color.parseColor("#1B2450") else Color.parseColor("#9CCB86")
+        p.color = cHill()
         c.drawOval(RectF(-w * 0.3f, h * 0.42f, w * 0.7f, h * 0.62f), p)
         c.drawOval(RectF(w * 0.4f, h * 0.44f, w * 1.3f, h * 0.62f), p)
 
         // 地面
-        p.color = if (isNight) Color.parseColor("#2E3B33") else Color.parseColor("#79B364")
+        p.color = cGround()
         c.drawRect(0f, h * 0.52f, w, h, p)
+
+        // 雪テーマは地面に積雪の白を重ねる
+        if (theme == "snow" && !isNight) {
+            p.color = Color.argb(120, 255, 255, 255)
+            c.drawRect(0f, h * 0.52f, w, h * 0.6f, p)
+        }
 
         // 石畳の道
         p.color = if (isNight) Color.parseColor("#4A4E5C") else Color.parseColor("#C9C2AE")
@@ -1301,6 +1427,15 @@ class TownView(context: Context, private val isNight: Boolean) : View(context) {
             val half = w * 0.05f + t * w * 0.11f
             c.drawRect(w * 0.5f - half, yy, w * 0.5f + half, yy + 4f, p)
             yy += h * 0.05f + t * h * 0.03f
+        }
+
+        // 桜テーマは花びらを散らす
+        if (theme == "sakura") {
+            p.color = Color.argb(200, 255, 183, 213)
+            repeat(24) {
+                c.drawCircle(rnd.nextFloat() * w, h * 0.1f + rnd.nextFloat() * h * 0.8f,
+                    w * 0.008f + rnd.nextFloat() * w * 0.01f, p)
+            }
         }
 
         // 家（DQの村っぽく）
@@ -1399,7 +1534,9 @@ class MainActivity : Activity() {
 
     private fun setScreen(content: View) {
         root.removeAllViews()
-        root.addView(TownView(this, night), FrameLayout.LayoutParams(-1, -1))
+        val theme = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+            .getString("bg_theme", "normal") ?: "normal"
+        root.addView(TownView(this, night, theme), FrameLayout.LayoutParams(-1, -1))
         val sc = ScrollView(this)
         sc.isFillViewport = true
         sc.addView(content)
@@ -2010,6 +2147,35 @@ class MainActivity : Activity() {
 
     // ---------- 推理ノート ----------
 
+    private fun showHintDialog() {
+        val e = engine
+        e.computeMostSuspected(currentTalks)
+        val d = android.app.Dialog(this)
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val outer = card()
+        val sc = ScrollView(this)
+        sc.addView(outer)
+        val dm = resources.displayMetrics
+
+        outer.addView(tv("🔍 AIアシスタント", 19f, true, Color.parseColor("#FFE28A")))
+        outer.addView(tv("いまの状況からの推理のヒント", 12f, false, Color.parseColor("#BFD0FF")))
+        outer.addView(space(dp(10)))
+        for (hint in e.buildHints()) {
+            val box = card()
+            box.addView(tv(hint, 14f))
+            outer.addView(box)
+            outer.addView(space(dp(8)))
+        }
+        outer.addView(tv("※ ヒントは公開情報だけをもとにした一般的な助言です。最後に決めるのはあなたです。",
+            11f, false, Color.parseColor("#9AA0B5")))
+        outer.addView(space(dp(12)))
+        outer.addView(btn("とじる") { d.dismiss() })
+        d.setContentView(sc)
+        d.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        d.window?.setLayout((dm.widthPixels * 0.94f).toInt(), (dm.heightPixels * 0.86f).toInt())
+        d.show()
+    }
+
     private fun showNoteDialog() {
         val e = engine
         val d = android.app.Dialog(this)
@@ -2100,7 +2266,9 @@ class MainActivity : Activity() {
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
         val g = sp.getInt("games", 0)
         if (g > 0) {
-            val st = tv("戦績: ${sp.getInt("wins", 0)}勝 / ${g}戦", 13f, true, Color.WHITE)
+            val streak = sp.getInt("win_streak", 0)
+            val streakTxt = if (streak >= 2) "　🔥$streak 連勝" else ""
+            val st = tv("戦績: ${sp.getInt("wins", 0)}勝 / ${g}戦$streakTxt", 13f, true, Color.WHITE)
             st.gravity = Gravity.CENTER
             st.setShadowLayer(6f, 0f, 2f, Color.argb(180, 0, 0, 0))
             pn.addView(st)
@@ -2134,7 +2302,68 @@ class MainActivity : Activity() {
         pn.addView(btn("📊 成績", Color.parseColor("#3D9E6B")) { showStats() },
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
+        pn.addView(btn("🛍️ ショップ（🪙${sp.getInt("coins", 0)}）", Color.parseColor("#D8703D")) { showShop() },
+            LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
         pn.addView(btn("ルール") { showRules() }, LinearLayout.LayoutParams(-1, -2))
+        setScreen(pn)
+    }
+
+    // ---------- ショップ（背景きせかえ） ----------
+
+    // id, 名前, 価格（0=最初から所持）
+    private val bgThemes = listOf(
+        Triple("normal", "ふつうの村", 0),
+        Triple("dusk", "夕暮れの村", 120),
+        Triple("snow", "雪の村", 200),
+        Triple("sakura", "桜の村", 280)
+    )
+
+    private fun showShop() {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val pn = panel()
+        val cd = card()
+        val coins = sp.getInt("coins", 0)
+        val current = sp.getString("bg_theme", "normal") ?: "normal"
+        cd.addView(tv("🛍️ ショップ", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("🪙 所持コイン: $coins", 15f, true, Color.parseColor("#FFD450")))
+        cd.addView(tv("ゲームをプレイするとコインがたまります（1戦+10・勝利+20）", 11f, false,
+            Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(10)))
+        cd.addView(tv("🌄 背景きせかえ", 15f, true, Color.parseColor("#A8D8FF")))
+
+        for ((id, name, price) in bgThemes) {
+            val owned = price == 0 || sp.getBoolean("bg_owned_$id", false)
+            val selected = current == id
+            val box = card()
+            box.addView(tv(name, 15f, true,
+                if (selected) Color.parseColor("#A8E6A1") else Color.WHITE))
+            // 小さなプレビュー（昼のテーマ帯）
+            box.addView(TownView(this, false, id), LinearLayout.LayoutParams(-1, dp(70)))
+            box.addView(space(dp(6)))
+            when {
+                selected -> box.addView(tv("✔ 使用中", 13f, true, Color.parseColor("#A8E6A1")))
+                owned -> box.addView(btn("これにする", Color.parseColor("#3D9E6B")) {
+                    sp.edit().putString("bg_theme", id).apply(); showShop()
+                })
+                coins >= price -> box.addView(btn("🪙$price で購入", Color.parseColor("#D8703D")) {
+                    sp.edit()
+                        .putInt("coins", coins - price)
+                        .putBoolean("bg_owned_$id", true)
+                        .putString("bg_theme", id)
+                        .apply()
+                    showShop()
+                })
+                else -> box.addView(tv("🪙$price （コインが足りません）", 13f, false,
+                    Color.parseColor("#9AA0B5")))
+            }
+            cd.addView(box)
+            cd.addView(space(dp(8)))
+        }
+
+        cd.addView(space(dp(6)))
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
         setScreen(pn)
     }
 
@@ -2157,6 +2386,8 @@ class MainActivity : Activity() {
             when { rate >= 60 -> Color.parseColor("#A8E6A1")
                    rate >= 40 -> Color.parseColor("#FFE28A")
                    else -> Color.parseColor("#FF9B9B") }))
+        cd.addView(tv("連勝　いま ${sp.getInt("win_streak", 0)} / 最高 ${sp.getInt("best_streak", 0)}",
+            14f, true, Color.parseColor("#FF9B6B")))
         cd.addView(space(dp(6)))
         // 勝率バー
         val barBg = LinearLayout(this)
@@ -2303,7 +2534,7 @@ class MainActivity : Activity() {
             val name = GameEngine.NAMES[i]
             val met = sp.getInt("met_$i", 0)       // 一緒に遊んだ回数
             val won = sp.getInt("won_$i", 0)       // そのコが村の勝ちに貢献
-            val fav = (met * 5 + won * 15).coerceAtMost(100)   // 好感度(0-100)
+            val fav = favValue(sp, i)              // 好感度(0-100)
 
             val row = LinearLayout(this)
             row.orientation = LinearLayout.HORIZONTAL
@@ -2330,13 +2561,14 @@ class MainActivity : Activity() {
                 info.addView(tv("？？？（${an.jp}）", 15f, true, Color.parseColor("#9AA0B5")))
                 info.addView(tv("まだ出会っていない", 12f, false, Color.parseColor("#9AA0B5")))
             } else {
-                info.addView(tv("$name（${an.jp}）", 15f, true))
+                info.addView(tv("$name（${an.jp}・${an.persona}）", 15f, true))
                 // 好感度バー（ハート）
                 val hearts = (fav / 20)   // 0-5
                 val heartStr = "❤".repeat(hearts) + "♡".repeat(5 - hearts)
                 info.addView(tv("好感度 $heartStr  ($fav)", 13f, false, Color.parseColor("#FFC9C9")))
                 info.addView(tv("遊んだ回数 ${met}　勝利貢献 ${won}", 11f, false,
                     Color.parseColor("#BFD0FF")))
+                info.addView(btn("💬 会いに行く", Color.parseColor("#7A4FD8")) { showChat(i) })
             }
             row.addView(info)
             cd.addView(row)
@@ -2351,6 +2583,123 @@ class MainActivity : Activity() {
         pn.addView(cd)
         setScreen(pn)
     }
+
+    // ---------- AIチャット（雑談・プレゼント） ----------
+
+    private var chatLog = ArrayList<Pair<Boolean, String>>()   // (自分か, テキスト)
+
+    private fun showChat(animalIdx: Int) {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val an = Animal.values()[animalIdx]
+        val name = GameEngine.NAMES[animalIdx]
+        val fav = favValue(sp, animalIdx)
+        val coins = sp.getInt("coins", 0)
+
+        val pn = panel()
+        val cd = card()
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.addView(CharacterView(this, an, true), LinearLayout.LayoutParams(dp(64), dp(64)))
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.VERTICAL
+        head.setPadding(dp(10), 0, 0, 0)
+        head.addView(tv("$name（${an.jp}・${an.persona}）", 17f, true))
+        val hearts = fav / 20
+        head.addView(tv("好感度 " + "❤".repeat(hearts) + "♡".repeat(5 - hearts) + "  ($fav)",
+            13f, false, Color.parseColor("#FFC9C9")))
+        row.addView(head)
+        cd.addView(row)
+        cd.addView(space(dp(8)))
+
+        // チャットログ
+        val logBox = card()
+        if (chatLog.isEmpty()) {
+            logBox.addView(tv(chatGreeting(name, fav), 14f))
+        } else {
+            for ((mine, text) in chatLog) {
+                val b = tv((if (mine) "あなた: " else "$name: ") + text, 14f, mine,
+                    if (mine) Color.parseColor("#BFD0FF") else Color.WHITE)
+                logBox.addView(b)
+                logBox.addView(space(dp(4)))
+            }
+        }
+        cd.addView(logBox)
+        cd.addView(space(dp(10)))
+
+        // 話しかけるボタン（好感度で反応が変わる。話すと少しだけ好感度が上がる）
+        cd.addView(tv("話しかける", 14f, true, Color.parseColor("#A8D8FF")))
+        val topics = listOf("あいさつする", "人狼のコツを聞く", "ほめる")
+        for (topic in topics) {
+            cd.addView(btn(topic, Color.parseColor("#3D6BD8")) {
+                chatLog.add(true to topic)
+                chatLog.add(false to chatReply(name, an, topic, favValue(sp, animalIdx)))
+                // 話すと好感度+1（1日1回上限などは省略しライトに）
+                sp.edit().putInt("gift_$animalIdx",
+                    (sp.getInt("gift_$animalIdx", 0) + 1)).apply()
+                showChatRefresh(animalIdx)
+            })
+            cd.addView(space(dp(4)))
+        }
+        cd.addView(space(dp(8)))
+
+        // プレゼント（コインを使って好感度を上げる）
+        cd.addView(tv("🎁 プレゼント（好感度アップ）", 14f, true, Color.parseColor("#FFD450")))
+        cd.addView(tv("所持コイン: 🪙$coins", 12f, false, Color.parseColor("#BFD0FF")))
+        val gifts = listOf(Triple("木の実", 20, 5), Triple("お花", 50, 12), Triple("ごちそう", 100, 25))
+        for ((gname, price, up) in gifts) {
+            if (coins >= price) {
+                cd.addView(btn("$gname をあげる（🪙$price → 好感度+$up）", Color.parseColor("#D8703D")) {
+                    sp.edit()
+                        .putInt("coins", coins - price)
+                        .putInt("gift_$animalIdx", sp.getInt("gift_$animalIdx", 0) + up)
+                        .apply()
+                    chatLog.add(true to "$gname をプレゼントした")
+                    chatLog.add(false to giftReaction(name, gname))
+                    showChatRefresh(animalIdx)
+                })
+            } else {
+                cd.addView(tv("$gname （🪙$price・コインが足りません）", 12f, false,
+                    Color.parseColor("#9AA0B5")))
+            }
+            cd.addView(space(dp(4)))
+        }
+
+        cd.addView(space(dp(12)))
+        cd.addView(btn("図鑑へもどる", Color.parseColor("#D8703D")) {
+            chatLog = ArrayList(); showZukan()
+        })
+        pn.addView(cd)
+        setScreen(pn)
+    }
+
+    private fun showChatRefresh(animalIdx: Int) = showChat(animalIdx)
+
+    private fun chatGreeting(name: String, fav: Int): String = when {
+        fav >= 80 -> "$name「わぁ、来てくれたんだ！あなたとお話しするの、大すき！」"
+        fav >= 40 -> "$name「やあ、こんにちは。今日はどうしたの？」"
+        fav >= 15 -> "$name「…あ、どうも。なにか用かな？」"
+        else -> "$name「……（まだ少し警戒しているようだ）」"
+    }
+
+    private fun chatReply(name: String, an: Animal, topic: String, fav: Int): String {
+        val warm = fav >= 50
+        return when (topic) {
+            "あいさつする" ->
+                if (warm) "$name「こんにちは！会えてうれしいよ😊」"
+                else "$name「…こんにちは。」"
+            "人狼のコツを聞く" ->
+                if (warm) "$name「占い師が2人出たら、片方は必ず偽物だよ。発言の食い違いをよく見るといいよ！」"
+                else "$name「コツ…？うーん、自分で考えるのも大事だと思うな。」"
+            "ほめる" ->
+                if (warm) "$name「えへへ、そんなにほめても何も出ないよ〜♪」"
+                else "$name「…どうも。おせじでもうれしいけど。」"
+            else -> "$name「……？」"
+        }
+    }
+
+    private fun giftReaction(name: String, gift: String): String =
+        "$name「わぁ、$gift だ！ありがとう、大切にするね！（好感度が上がった）」"
 
     private fun showRules() {
         val pn = panel()
@@ -2426,14 +2775,26 @@ class MainActivity : Activity() {
     private fun startGame() {
         engine = GameEngine()
         engine.setup()
-        engine.difficulty = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
-            .getInt("difficulty", 1)
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        engine.difficulty = sp.getInt("difficulty", 1)
+        // 各キャラの好感度（遊んだ回数・勝利貢献・プレゼント）をエンジンへ注入
+        for (i in Animal.values().indices) {
+            engine.favByAnimal[i] = favValue(sp, i)
+        }
         currentTalks = ArrayList()
         predictedWolves = LinkedHashSet()
         predictionActive = false
         moodVictory = 0
         loggedTalkDay = -1
         showRoleReveal()
+    }
+
+    // 好感度（0-100）= 遊んだ回数×5 + 勝利貢献×15 + プレゼント
+    private fun favValue(sp: android.content.SharedPreferences, animalIdx: Int): Int {
+        val met = sp.getInt("met_$animalIdx", 0)
+        val won = sp.getInt("won_$animalIdx", 0)
+        val gift = sp.getInt("gift_$animalIdx", 0)
+        return (met * 5 + won * 15 + gift).coerceAtMost(100)
     }
 
     private fun showRoleReveal() {
@@ -2770,6 +3131,8 @@ class MainActivity : Activity() {
         cd.addView(btn("📋 まとめを見る", Color.parseColor("#3D9E6B")) { showSummaryDialog() })
         cd.addView(space(dp(6)))
         cd.addView(btn("📓 推理ノート", Color.parseColor("#3D6BD8")) { showNoteDialog() })
+        cd.addView(space(dp(6)))
+        cd.addView(btn("🔍 ヒント（AIアシスタント）", Color.parseColor("#7A4FD8")) { showHintDialog() })
 
         // 🚩 旗機能（生きているあなただけ操作可能）
         if (h.alive) {
@@ -2919,6 +3282,19 @@ class MainActivity : Activity() {
         // 役職図鑑：あなたの役職を解放
         editor.putBoolean("role_seen_${h.role.name}", true)
 
+        // 連勝ストリークの更新
+        val prevStreak = sp.getInt("win_streak", 0)
+        val newStreak = if (humanWin) prevStreak + 1 else 0
+        val best = maxOf(sp.getInt("best_streak", 0), newStreak)
+        editor.putInt("win_streak", newStreak)
+        editor.putInt("best_streak", best)
+        // 連勝ボーナス（3連勝以上で1連勝ごとに+10）
+        val streakBonus = if (newStreak >= 3) (newStreak - 2) * 10 else 0
+
+        // コイン付与（1戦=10、勝利=+20、連勝ボーナス）
+        val gained = 10 + (if (humanWin) 20 else 0) + streakBonus
+        editor.putInt("coins", sp.getInt("coins", 0) + gained)
+
         // 実績の達成判定
         val totalGames = sp.getInt("games", 0) + 1
         val newlyUnlocked = ArrayList<String>()
@@ -2965,6 +3341,13 @@ class MainActivity : Activity() {
             for (nm in newlyUnlocked) {
                 cd.addView(tv("　・$nm", 13f, true, Color.parseColor("#FFD08A")))
             }
+        }
+        cd.addView(space(dp(6)))
+        cd.addView(tv("🪙 +$gained コイン獲得！（所持: ${sp.getInt("coins", 0) + gained}）", 13f, true,
+            Color.parseColor("#FFD450")))
+        if (newStreak >= 2) {
+            cd.addView(tv("🔥 $newStreak 連勝中！" + if (streakBonus > 0) "（連勝ボーナス +$streakBonus）" else "",
+                13f, true, Color.parseColor("#FF9B6B")))
         }
         cd.addView(space(dp(12)))
         cd.addView(tv("【役職公開】", 14f, true, Color.parseColor("#FFE28A")))
