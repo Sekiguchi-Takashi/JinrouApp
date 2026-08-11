@@ -128,6 +128,20 @@ class GameEngine {
     }
 
     // AIアシスタント：見えている情報から推理のヒントを組み立てる
+    // AI推論：いまの局面で人狼陣営がどれくらい有利か（0-100%）をざっくり推定
+    fun wolfAdvantage(): Int {
+        val living = alive()
+        val wolves = living.count { it.role.isWolf }
+        if (wolves == 0) return 0
+        val villagerSide = living.count { !it.role.wolfSide && it.role != Role.FOX_SPIRIT }
+        if (villagerSide <= 0) return 100
+        var adv = wolves * 100 / (wolves + villagerSide)
+        adv -= publicWhite.count { players[it].alive } * 4
+        adv -= publicBlack.count { players[it].alive } * 3
+        if (wolves >= villagerSide) adv += 20
+        return adv.coerceIn(3, 97)
+    }
+
     fun buildHints(): List<String> {
         val hints = ArrayList<String>()
         val claimAlive = seerClaimants.map { players[it] }.filter { it.alive }
@@ -1541,6 +1555,13 @@ class MainActivity : Activity() {
     private var engine = GameEngine()
     private var night = false
     private var currentTalks = ArrayList<Talk>()
+    // オプション（ゲーム開始時にSharedPreferencesから読み込む）
+    private var optNumbering = false
+    private var optCounter = true
+    private var optAnalysis = false
+    private var optWinrate = false
+    private var optOnebyone = false
+    private var talkReveal = 0   // ⑤1人ずつ送り：表示済みの会話数
     private var predictedWolves = LinkedHashSet<Int>()   // 観戦前の人狼予想（2匹）
     private var predictionActive = false
 
@@ -1704,6 +1725,14 @@ class MainActivity : Activity() {
             val flp = FrameLayout.LayoutParams(-2, -2)
             flp.gravity = Gravity.TOP or Gravity.END
             stack.addView(flag, flp)
+        }
+        // 動物に固定番号をつけるオプション
+        if (optNumbering) {
+            val num = "①②③④⑤⑥⑦⑧⑨".getOrNull(pl.animal.ordinal)?.toString() ?: ""
+            val badge = tv(num, (sizeDp * 0.34f).coerceAtLeast(15f), true, Color.parseColor("#FFE28A"))
+            val blp = FrameLayout.LayoutParams(-2, -2)
+            blp.gravity = Gravity.TOP or Gravity.START
+            stack.addView(badge, blp)
         }
         cell.addView(stack)
 
@@ -2030,6 +2059,7 @@ class MainActivity : Activity() {
         cd.addView(btn("疑いの話し合いへ", Color.parseColor("#D8703D")) {
             currentTalks.addAll(freeTalksToday)
             currentTalks.addAll(engine.discussionTalks())
+            talkReveal = if (optOnebyone) 1 else currentTalks.size
             showDay()
         })
         pn.addView(cd)
@@ -2351,27 +2381,10 @@ class MainActivity : Activity() {
         pn.addView(diffBtn, LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
 
-        // 共有者ルールのON/OFF（村人2枠が共有者2になる）
-        val masonOn = sp.getBoolean("mason_rule", false)
-        val masonBtn = btn("共有者ルール: " + if (masonOn) "あり" else "なし",
-            Color.parseColor(if (masonOn) "#A8E6A1" else "#6B7280")) {
-            sp.edit().putBoolean("mason_rule", !masonOn).apply()
-            showTitle()
-        }
-        pn.addView(masonBtn, LinearLayout.LayoutParams(-1, -2))
-        pn.addView(space(dp(10)))
-
-        // 恋人ルールのON/OFF（ランダム2人が恋人になる）
-        val loversOn = sp.getBoolean("lovers_rule", false)
-        val loversBtn = btn("恋人ルール: " + if (loversOn) "あり" else "なし",
-            Color.parseColor(if (loversOn) "#FF9BD0" else "#6B7280")) {
-            sp.edit().putBoolean("lovers_rule", !loversOn).apply()
-            showTitle()
-        }
-        pn.addView(loversBtn, LinearLayout.LayoutParams(-1, -2))
-        pn.addView(space(dp(10)))
-
         pn.addView(btn("はじめる", Color.parseColor("#D8703D")) { startGame() },
+            LinearLayout.LayoutParams(-1, -2))
+        pn.addView(space(dp(10)))
+        pn.addView(btn("⚙️ オプション", Color.parseColor("#3D6BD8")) { showOptions() },
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
         pn.addView(btn("📖 キャラ図鑑", Color.parseColor("#3D9E6B")) { showZukan() },
@@ -2393,6 +2406,66 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
         pn.addView(btn("ルール") { showRules() }, LinearLayout.LayoutParams(-1, -2))
+        setScreen(pn)
+    }
+
+    // ---------- オプション ----------
+
+    // ON/OFFトグルボタンを作る共通ヘルパー
+    private fun toggleBtn(sp: android.content.SharedPreferences, key: String, label: String,
+                          defaultOn: Boolean, onColor: String = "#A8E6A1"): Button {
+        val on = sp.getBoolean(key, defaultOn)
+        return btn("$label: " + if (on) "する" else "しない",
+            Color.parseColor(if (on) onColor else "#6B7280")) {
+            sp.edit().putBoolean(key, !on).apply()
+            showOptions()
+        }
+    }
+
+    private fun showOptions() {
+        val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("⚙️ オプション", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(10)))
+
+        // --- 特別ルール ---
+        cd.addView(tv("特別ルール", 15f, true, Color.parseColor("#A8D8FF")))
+        val masonOn = sp.getBoolean("mason_rule", false)
+        cd.addView(btn("共有者ルール: " + if (masonOn) "あり" else "なし",
+            Color.parseColor(if (masonOn) "#A8E6A1" else "#6B7280")) {
+            sp.edit().putBoolean("mason_rule", !masonOn).apply(); showOptions()
+        })
+        cd.addView(tv("村人2枠が、お互いを知る共有者2人になります。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        val loversOn = sp.getBoolean("lovers_rule", false)
+        cd.addView(btn("恋人ルール: " + if (loversOn) "あり" else "なし",
+            Color.parseColor(if (loversOn) "#FF9BD0" else "#6B7280")) {
+            sp.edit().putBoolean("lovers_rule", !loversOn).apply(); showOptions()
+        })
+        cd.addView(tv("ランダムな2人が恋人に。2人だけ生き残れば恋人の勝ち。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(12)))
+
+        // --- 表示オプション ---
+        cd.addView(tv("画面表示", 15f, true, Color.parseColor("#A8D8FF")))
+        cd.addView(toggleBtn(sp, "opt_numbering", "① 動物に番号をつける", false))
+        cd.addView(tv("9匹に固定の番号（①〜⑨）を表示します。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        cd.addView(toggleBtn(sp, "opt_counter", "② 生存数を上に表示", true))
+        cd.addView(tv("人狼の残り数と、それ以外の残り数を画面上部に常に表示します。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        cd.addView(toggleBtn(sp, "opt_analysis", "③ 会話ごとにAI分析図", false, "#7A4FD8"))
+        cd.addView(tv("会話画面に、疑いの構図をまとめた図解を表示します。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        cd.addView(toggleBtn(sp, "opt_winrate", "④ 人狼の有利率を表示", false, "#FF9B9B"))
+        cd.addView(tv("いまの局面で人狼がどれくらい有利かをAI推論で表示します。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        cd.addView(toggleBtn(sp, "opt_onebyone", "⑤ 会話を1人ずつ送りで進める", false, "#FFD08A"))
+        cd.addView(tv("全員の会話をまとめて出さず、番号順に1人ずつ「次へ」で送ります。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(14)))
+
+        cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
+        pn.addView(cd)
         setScreen(pn)
     }
 
@@ -2921,6 +2994,11 @@ class MainActivity : Activity() {
         engine.difficulty = sp.getInt("difficulty", 1)
         engine.masonRule = sp.getBoolean("mason_rule", false)
         engine.loversRule = sp.getBoolean("lovers_rule", false)
+        optNumbering = sp.getBoolean("opt_numbering", false)
+        optCounter = sp.getBoolean("opt_counter", true)
+        optAnalysis = sp.getBoolean("opt_analysis", false)
+        optWinrate = sp.getBoolean("opt_winrate", false)
+        optOnebyone = sp.getBoolean("opt_onebyone", false)
         // 各キャラの好感度（遊んだ回数・勝利貢献・プレゼント）をエンジンへ注入
         for (i in Animal.values().indices) {
             engine.favByAnimal[i] = favValue(sp, i)
@@ -3268,6 +3346,40 @@ class MainActivity : Activity() {
 
     private var loggedTalkDay = -1
 
+    // 生存数カウンター（②）と人狼有利率（④）を上部に表示
+    private fun addStatusHeader(cd: LinearLayout) {
+        val e = engine
+        if (optCounter) {
+            val living = e.alive()
+            val wolves = living.count { it.role.isWolf }
+            val others = living.size - wolves
+            val row = tv("🐺 人狼 のこり $wolves　｜　🏘️ それ以外 のこり $others", 14f, true,
+                Color.parseColor("#FFE28A"))
+            row.gravity = Gravity.CENTER
+            cd.addView(row)
+        }
+        if (optWinrate) {
+            val adv = e.wolfAdvantage()
+            cd.addView(space(dp(4)))
+            val label = tv("🤖 AI推論：人狼の有利率 $adv%", 13f, true,
+                when { adv >= 60 -> Color.parseColor("#FF9B9B")
+                       adv >= 40 -> Color.parseColor("#FFE28A")
+                       else -> Color.parseColor("#A8E6A1") })
+            label.gravity = Gravity.CENTER
+            cd.addView(label)
+            // 有利率バー
+            val barBg = LinearLayout(this)
+            barBg.setBackgroundColor(Color.argb(60, 255, 255, 255))
+            val bar = View(this)
+            bar.setBackgroundColor(Color.parseColor("#FF9B9B"))
+            barBg.addView(bar, LinearLayout.LayoutParams(0, dp(10), adv.toFloat()))
+            val pad = View(this)
+            barBg.addView(pad, LinearLayout.LayoutParams(0, dp(10), (100 - adv).toFloat()))
+            cd.addView(barBg, LinearLayout.LayoutParams(-1, dp(10)))
+        }
+        if (optCounter || optWinrate) cd.addView(space(dp(8)))
+    }
+
     private fun showDay() {
         val e = engine
         val h = e.human()
@@ -3279,6 +3391,7 @@ class MainActivity : Activity() {
         val pn = panel()
         val cd = card()
         cd.addView(tv("💬 ${e.dayCount}日目の昼 - 話し合い", 19f, true, Color.parseColor("#FFE28A")))
+        addStatusHeader(cd)
         var meText = "あなた: ${h.pname}（${h.role.jp}）"
         if (!h.alive) meText += " †死亡"
         cd.addView(tv(meText, 13f, false, Color.parseColor("#BFD0FF")))
@@ -3309,8 +3422,35 @@ class MainActivity : Activity() {
         cd.addView(space(dp(10)))
 
         // 会話：キャラを1列に並べて吹き出しで表示（画面ごと下にスクロール可能）
-        for (t in currentTalks) {
-            cd.addView(talkBubble(t))
+        val shown = if (optOnebyone) talkReveal.coerceIn(0, currentTalks.size) else currentTalks.size
+        for (i in 0 until shown) {
+            cd.addView(talkBubble(currentTalks[i]))
+            cd.addView(space(dp(8)))
+        }
+        // ⑤ 1人ずつ送り：まだ残りがあれば「次へ」ボタン
+        if (optOnebyone && shown < currentTalks.size) {
+            cd.addView(btn("次の人の話をきく ▶", Color.parseColor("#3D6BD8")) {
+                talkReveal = (talkReveal + 1).coerceAtMost(currentTalks.size)
+                showDay()
+            })
+            cd.addView(space(dp(8)))
+            cd.addView(tv("（${shown} / ${currentTalks.size} 人）", 12f, false, Color.parseColor("#BFD0FF")))
+            pn.addView(cd)
+            setScreen(pn)
+            return
+        }
+
+        // ③ 会話ごとのAI分析図（疑いの構図を図解）
+        if (optAnalysis) {
+            cd.addView(space(dp(6)))
+            cd.addView(tv("🤖 AI分析：会話の全体像", 14f, true, Color.parseColor("#C9B6FF")))
+            cd.addView(tv("🐺付きの矢印＝疑っている相手", 11f, false, Color.parseColor("#BFD0FF")))
+            e.computeMostSuspected(currentTalks)
+            val suspectTalks = currentTalks.filter { it.suspect }
+            val dm2 = resources.displayMetrics
+            val side = (dm2.widthPixels * 0.8f).toInt()
+            cd.addView(SummaryView(this, e, suspectTalks),
+                LinearLayout.LayoutParams(side, side).also { it.gravity = Gravity.CENTER_HORIZONTAL })
             cd.addView(space(dp(8)))
         }
 
