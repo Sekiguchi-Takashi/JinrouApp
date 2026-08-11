@@ -60,6 +60,8 @@ class GameEngine {
 
     companion object {
         val NAMES = listOf("ミミ", "コン", "タマ", "ポチ", "クマ吉", "ホウ", "リスケ", "コアタ", "ペン太")
+        // 人モードの名前（動物と同じ並び順で対応）
+        val HUMAN_NAMES = listOf("篤史", "茜", "敏行", "真由美", "杏奈", "健一", "慎吾", "千鶴", "透")
         const val N = 9
     }
 
@@ -223,6 +225,7 @@ class GameEngine {
 
     var masonRule = false   // Activity側から注入。ONなら村人2枠が共有者2になる
     var loversRule = false  // Activity側から注入。ONならランダム2人が恋人になる
+    var humanCast = false   // Activity側から注入。ONなら登場キャラを人間の名前にする
     val loverIds = ArrayList<Int>()   // 恋人2人のid（loversRule時）
 
     fun isLover(p: Player) = loverIds.contains(p.id)
@@ -249,7 +252,10 @@ class GameEngine {
     fun setup() {
         players.clear()
         val animals = Animal.values()
-        for (i in 0 until N) players.add(Player(i, NAMES[i], animals[i]))
+        for (i in 0 until N) {
+            val nm = if (humanCast) HUMAN_NAMES[i] else NAMES[i]
+            players.add(Player(i, nm, animals[i]))
+        }
         val villagerRole = if (masonRule) Role.MASON else Role.VILLAGER
         val roles = mutableListOf(
             villagerRole, villagerRole,
@@ -1239,9 +1245,38 @@ object CharacterArt {
 class CharacterView(context: Context, private val animal: Animal, private var aliveFlag: Boolean)
     : View(context) {
 
-    // emotion: 0=通常(アイドル) 1=喜び 2=悲しみ
+    // 人モード：trueなら動物の手描きではなく人間の立ち絵を表示する
+    var humanMode: Boolean = false
+        set(v) { field = v; invalidate() }
+
+    private var humanBitmap: android.graphics.Bitmap? = null
+    private var loadedKey: String? = null
+    private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+
+    // 表情に対応する画像を読み込む（無い表情はnormalにフォールバック）
+    private fun loadHuman() {
+        val idx = animal.ordinal + 1
+        val emoName = when (emotion) {
+            1 -> "happy"; 2 -> "sad"; 3 -> "angry"
+            4 -> "scared"; 5 -> "panic"; 6 -> "relieved"
+            else -> "normal"
+        }
+        val key = "human${idx}_$emoName"
+        if (loadedKey == key && humanBitmap != null) return
+        var resId = resources.getIdentifier(key, "drawable", context.packageName)
+        if (resId == 0) {
+            // その表情が無ければ通常表情で代用
+            resId = resources.getIdentifier("human${idx}_normal", "drawable", context.packageName)
+        }
+        if (resId != 0) {
+            humanBitmap = android.graphics.BitmapFactory.decodeResource(resources, resId)
+            loadedKey = key
+        }
+    }
+
+    // emotion: 0=通常(アイドル) 1=喜び 2=悲しみ 3=怒り 4=恐怖 5=焦り 6=安心
     var emotion: Int = 0
-        set(v) { field = v; if (v != 0) startAnim() }
+        set(v) { field = v; loadedKey = null; if (v != 0) startAnim() }
 
     private var phase = 0f
     private var running = false
@@ -1304,6 +1339,28 @@ class CharacterView(context: Context, private val animal: Animal, private var al
             else -> {  // アイドル：呼吸のような小さな上下＋わずかな傾き
                 hop = kotlin.math.sin(phase * two * 0.6f) * s * 0.03f
                 lean = kotlin.math.sin(phase * two * 0.45f) * 2f
+            }
+        }
+        if (humanMode) {
+            loadHuman()
+            val bmp = humanBitmap
+            if (bmp != null) {
+                canvas.save()
+                canvas.translate(width / 2f, height / 2f - hop)
+                canvas.rotate(lean)
+                val dst = RectF(-s / 2f, -s / 2f, s / 2f, s / 2f)
+                // 死亡時は暗く半透明にする
+                if (!aliveFlag) {
+                    bmpPaint.alpha = 110
+                    bmpPaint.colorFilter = android.graphics.ColorMatrixColorFilter(
+                        android.graphics.ColorMatrix().apply { setSaturation(0f) })
+                } else {
+                    bmpPaint.alpha = 255
+                    bmpPaint.colorFilter = null
+                }
+                canvas.drawBitmap(bmp, null, dst, bmpPaint)
+                canvas.restore()
+                return
             }
         }
         CharacterArt.draw(canvas, animal, width / 2f, height / 2f, s, aliveFlag,
@@ -1562,6 +1619,14 @@ class MainActivity : Activity() {
     private var optWinrate = false
     private var optOnebyone = false
     private var talkReveal = 0   // ⑤1人ずつ送り：表示済みの会話数
+    private var humanMode = false   // 人モード：動物のかわりに人間の立ち絵を使う
+
+    // 人モード設定を反映したCharacterViewを作る
+    private fun charView(animal: Animal, alive: Boolean): CharacterView {
+        val cv = CharacterView(this, animal, alive)
+        cv.humanMode = humanMode
+        return cv
+    }
     private var predictedWolves = LinkedHashSet<Int>()   // 観戦前の人狼予想（2匹）
     private var predictionActive = false
 
@@ -1570,6 +1635,8 @@ class MainActivity : Activity() {
         root = FrameLayout(this)
         root.setBackgroundColor(Color.parseColor("#0E1430"))
         setContentView(root)
+        humanMode = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+            .getBoolean("human_mode", false)
         showSplash()
     }
 
@@ -1711,7 +1778,7 @@ class MainActivity : Activity() {
 
         // キャラ画像の上に旗/疑いマークを重ねる
         val stack = FrameLayout(this)
-        val cv = CharacterView(this, pl.animal, pl.alive)
+        val cv = charView(pl.animal, pl.alive)
         cv.emotion = emotionOf(pl)
         stack.addView(cv, FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
 
@@ -1992,7 +2059,7 @@ class MainActivity : Activity() {
             val rowL = LinearLayout(this)
             rowL.orientation = LinearLayout.HORIZONTAL
             rowL.gravity = Gravity.CENTER_VERTICAL
-            rowL.addView(CharacterView(this, pl.animal, true),
+            rowL.addView(charView(pl.animal, true),
                 LinearLayout.LayoutParams(dp(48), dp(48)))
             rowL.addView(tv("  ${pl.pname}：" + (if (hit) "⭕ 人狼だった！" else "❌ 人狼ではなかった"),
                 15f, true, if (hit) Color.parseColor("#A8E6A1") else Color.parseColor("#FF9B9B")))
@@ -2138,7 +2205,7 @@ class MainActivity : Activity() {
         val left = LinearLayout(this)
         left.orientation = LinearLayout.VERTICAL
         left.gravity = Gravity.CENTER_HORIZONTAL
-        val cvv = CharacterView(this, sp.animal, sp.alive)
+        val cvv = charView(sp.animal, sp.alive)
         cvv.emotion = when {
             !sp.alive -> 0
             t.suspect -> 2   // 誰かを疑う=険しい表情
@@ -2366,7 +2433,8 @@ class MainActivity : Activity() {
         pn.addView(space(dp(14)))
 
         val preview = ArrayList<Player>()
-        Animal.values().forEachIndexed { i, an -> preview.add(Player(i, GameEngine.NAMES[i], an)) }
+        Animal.values().forEachIndexed { i, an ->
+            preview.add(Player(i, if (humanMode) GameEngine.HUMAN_NAMES[i] else GameEngine.NAMES[i], an)) }
         val cd0 = card()
         cd0.addView(charGrid(preview, 58, 3, null))
         pn.addView(cd0, LinearLayout.LayoutParams(-1, -2))
@@ -2443,6 +2511,19 @@ class MainActivity : Activity() {
         val cd = card()
         cd.addView(tv("⚙️ オプション", 20f, true, Color.parseColor("#FFE28A")))
         cd.addView(space(dp(10)))
+
+        // --- キャラクターモード ---
+        cd.addView(tv("キャラクター", 15f, true, Color.parseColor("#A8D8FF")))
+        val hm = sp.getBoolean("human_mode", false)
+        cd.addView(btn("登場キャラ: " + if (hm) "👤 人モード" else "🐰 どうぶつモード",
+            Color.parseColor(if (hm) "#7A9BD8" else "#3D9E6B")) {
+            sp.edit().putBoolean("human_mode", !hm).apply()
+            humanMode = !hm
+            showOptions()
+        })
+        cd.addView(tv(if (hm) "9人の人間キャラ（篤史・茜・敏行・真由美・杏奈・健一・慎吾・千鶴・透）で遊びます。"
+                      else "9匹のどうぶつキャラで遊びます。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(12)))
 
         // --- 特別ルール ---
         cd.addView(tv("特別ルール", 15f, true, Color.parseColor("#A8D8FF")))
@@ -2758,7 +2839,7 @@ class MainActivity : Activity() {
         cd.addView(space(dp(10)))
 
         Animal.values().forEachIndexed { i, an ->
-            val name = GameEngine.NAMES[i]
+            val name = if (humanMode) GameEngine.HUMAN_NAMES[i] else GameEngine.NAMES[i]
             val met = sp.getInt("met_$i", 0)       // 一緒に遊んだ回数
             val won = sp.getInt("won_$i", 0)       // そのコが村の勝ちに貢献
             val fav = favValue(sp, i)              // 好感度(0-100)
@@ -2777,7 +2858,7 @@ class MainActivity : Activity() {
                 box.addView(ph, FrameLayout.LayoutParams(dp(56), dp(56)).also { it.gravity = Gravity.CENTER })
                 row.addView(box)
             } else {
-                row.addView(CharacterView(this, an, true),
+                row.addView(charView(an, true),
                     LinearLayout.LayoutParams(dp(56), dp(56)))
             }
 
@@ -2818,7 +2899,7 @@ class MainActivity : Activity() {
     private fun showChat(animalIdx: Int) {
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
         val an = Animal.values()[animalIdx]
-        val name = GameEngine.NAMES[animalIdx]
+        val name = if (humanMode) GameEngine.HUMAN_NAMES[animalIdx] else GameEngine.NAMES[animalIdx]
         val fav = favValue(sp, animalIdx)
         val coins = sp.getInt("coins", 0)
 
@@ -2827,7 +2908,7 @@ class MainActivity : Activity() {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.addView(CharacterView(this, an, true), LinearLayout.LayoutParams(dp(64), dp(64)))
+        row.addView(charView(an, true), LinearLayout.LayoutParams(dp(64), dp(64)))
         val head = LinearLayout(this)
         head.orientation = LinearLayout.VERTICAL
         head.setPadding(dp(10), 0, 0, 0)
@@ -3003,17 +3084,20 @@ class MainActivity : Activity() {
     // ---------- ゲーム開始 / 役職確認 ----------
 
     private fun startGame() {
-        engine = GameEngine()
-        engine.setup()
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
-        engine.difficulty = sp.getInt("difficulty", 1)
+        engine = GameEngine()
+        // setup()の前にルールを注入する（役職構成・恋人・名前に影響するため）
         engine.masonRule = sp.getBoolean("mason_rule", false)
         engine.loversRule = sp.getBoolean("lovers_rule", false)
+        engine.humanCast = sp.getBoolean("human_mode", false)
+        engine.setup()
+        engine.difficulty = sp.getInt("difficulty", 1)
         optNumbering = sp.getBoolean("opt_numbering", false)
         optCounter = sp.getBoolean("opt_counter", true)
         optAnalysis = sp.getBoolean("opt_analysis", false)
         optWinrate = sp.getBoolean("opt_winrate", false)
         optOnebyone = sp.getBoolean("opt_onebyone", false)
+        humanMode = sp.getBoolean("human_mode", false)
         // 各キャラの好感度（遊んだ回数・勝利貢献・プレゼント）をエンジンへ注入
         for (i in Animal.values().indices) {
             engine.favByAnimal[i] = favValue(sp, i)
