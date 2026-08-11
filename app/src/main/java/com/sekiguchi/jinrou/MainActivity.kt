@@ -1346,9 +1346,13 @@ class CharacterView(context: Context, private val animal: Animal, private var al
             val bmp = humanBitmap
             if (bmp != null) {
                 canvas.save()
-                canvas.translate(width / 2f, height / 2f - hop)
+                // 跳ねても頭が切れないよう、上下に余白を残して少し小さめに描く
+                val maxHop = s * 0.16f
+                val draw = s - maxHop           // 立ち絵の描画サイズ
+                val baseY = height / 2f + maxHop * 0.5f   // 下寄せして上に逃げしろを作る
+                canvas.translate(width / 2f, baseY - hop)
                 canvas.rotate(lean)
-                val dst = RectF(-s / 2f, -s / 2f, s / 2f, s / 2f)
+                val dst = RectF(-draw / 2f, -draw / 2f, draw / 2f, draw / 2f)
                 // 死亡時は暗く半透明にする
                 if (!aliveFlag) {
                     bmpPaint.alpha = 110
@@ -1373,10 +1377,24 @@ class CharacterView(context: Context, private val animal: Animal, private var al
 // =====================================================
 
 class SummaryView(context: Context, private val engine: GameEngine,
-                  private val suspects: List<Talk>) : View(context) {
+                  private val suspects: List<Talk>,
+                  private val humanMode: Boolean = false) : View(context) {
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val humanCache = HashMap<Int, android.graphics.Bitmap?>()
+
+    // 人モードの立ち絵（通常表情）を取得
+    private fun humanBmp(animalOrdinal: Int): android.graphics.Bitmap? {
+        if (humanCache.containsKey(animalOrdinal)) return humanCache[animalOrdinal]
+        val resId = resources.getIdentifier(
+            "human${animalOrdinal + 1}_normal", "drawable", context.packageName)
+        val bmp = if (resId != 0)
+            android.graphics.BitmapFactory.decodeResource(resources, resId) else null
+        humanCache[animalOrdinal] = bmp
+        return bmp
+    }
 
     override fun onDraw(c: Canvas) {
         super.onDraw(c)
@@ -1411,7 +1429,22 @@ class SummaryView(context: Context, private val engine: GameEngine,
         tp.textSize = w * 0.042f
         for (pl in av) {
             val q = pos[pl.id] ?: continue
-            CharacterArt.draw(c, pl.animal, q[0], q[1], charSize, pl.alive)
+            val bmp = if (humanMode) humanBmp(pl.animal.ordinal) else null
+            if (bmp != null) {
+                val half = charSize * 0.6f
+                val dst = RectF(q[0] - half, q[1] - half, q[0] + half, q[1] + half)
+                if (!pl.alive) {
+                    bmpPaint.alpha = 110
+                    bmpPaint.colorFilter = android.graphics.ColorMatrixColorFilter(
+                        android.graphics.ColorMatrix().apply { setSaturation(0f) })
+                } else {
+                    bmpPaint.alpha = 255
+                    bmpPaint.colorFilter = null
+                }
+                c.drawBitmap(bmp, null, dst, bmpPaint)
+            } else {
+                CharacterArt.draw(c, pl.animal, q[0], q[1], charSize, pl.alive)
+            }
             tp.color = Color.WHITE
             tp.setShadowLayer(4f, 0f, 2f, Color.BLACK)
             val nm = if (pl.id == engine.humanId) "${pl.pname}★" else pl.pname
@@ -1778,6 +1811,7 @@ class MainActivity : Activity() {
 
         // キャラ画像の上に旗/疑いマークを重ねる
         val stack = FrameLayout(this)
+        stack.clipChildren = false   // 跳ねるアニメで頭が切れないように
         val cv = charView(pl.animal, pl.alive)
         cv.emotion = emotionOf(pl)
         stack.addView(cv, FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
@@ -2215,6 +2249,7 @@ class MainActivity : Activity() {
         // 番号オプションON時は、話しているキャラにも固定番号を重ねる
         if (optNumbering) {
             val stack = FrameLayout(this)
+            stack.clipChildren = false   // 跳ねるアニメで頭が切れないように
             stack.addView(cvv, FrameLayout.LayoutParams(dp(52), dp(52)))
             val num = "①②③④⑤⑥⑦⑧⑨".getOrNull(sp.animal.ordinal)?.toString() ?: ""
             val badge = tv(num, 17f, true, Color.parseColor("#FFE28A"))
@@ -2277,7 +2312,7 @@ class MainActivity : Activity() {
         val suspectTalks = talks.filter { it.suspect }
         val dm = resources.displayMetrics
         val side = (dm.widthPixels * 0.82f).toInt()
-        outer.addView(SummaryView(this, e, suspectTalks),
+        outer.addView(SummaryView(this, e, suspectTalks, humanMode),
             LinearLayout.LayoutParams(side, side))
         outer.addView(space(dp(10)))
 
@@ -3549,7 +3584,7 @@ class MainActivity : Activity() {
             val suspectTalks = currentTalks.filter { it.suspect }
             val dm2 = resources.displayMetrics
             val side = (dm2.widthPixels * 0.8f).toInt()
-            cd.addView(SummaryView(this, e, suspectTalks),
+            cd.addView(SummaryView(this, e, suspectTalks, humanMode),
                 LinearLayout.LayoutParams(side, side).also { it.gravity = Gravity.CENTER_HORIZONTAL })
             cd.addView(space(dp(8)))
         }
