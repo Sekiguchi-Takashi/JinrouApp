@@ -1835,6 +1835,32 @@ class MainActivity : Activity() {
         quickNextAction = action
     }
 
+    // 選択が必要な画面で「次へ」を押したとき、ランダムに選んでよいか確認する
+    private fun confirmRandomPick(what: String, cands: List<Player>, onPick: (Player) -> Unit) {
+        if (cands.isEmpty()) return
+        val pick = cands.random()
+        val d = android.app.Dialog(this)
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val outer = card()
+        outer.addView(tv("🎲 おまかせで選びますか？", 18f, true, Color.parseColor("#FFE28A")))
+        outer.addView(space(dp(8)))
+        outer.addView(tv("$what：${pick.pname}", 16f, true, Color.WHITE))
+        outer.addView(space(dp(4)))
+        outer.addView(tv("「次へ」でこの相手に決定します。自分で選びたいときは「もどる」を押してください。",
+            12f, false, Color.parseColor("#BFD0FF")))
+        outer.addView(space(dp(14)))
+        outer.addView(btn("次へ ▶", Color.parseColor("#D8703D")) {
+            d.dismiss(); onPick(pick)
+        })
+        outer.addView(space(dp(8)))
+        outer.addView(btn("もどる") { d.dismiss() })
+        val dm = resources.displayMetrics
+        d.setContentView(outer)
+        d.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        d.window?.setLayout((dm.widthPixels * 0.86f).toInt(), -2)
+        d.show()
+    }
+
     private fun setScreen(content: View, scrollToBottom: Boolean = false) {
         root.removeAllViews()
         val theme = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
@@ -2114,6 +2140,7 @@ class MainActivity : Activity() {
         cd.addView(space(dp(12)))
         cd.addView(tv("このあとどうしますか？", 14f))
         cd.addView(space(dp(8)))
+        setQuickNext("観戦") { onContinue() }
         cd.addView(btn("👀 観戦を続ける") { onContinue() })
         cd.addView(space(dp(8)))
         cd.addView(btn("🐺 人狼を予想して観戦", Color.parseColor("#7A4FD8")) {
@@ -2216,6 +2243,16 @@ class MainActivity : Activity() {
                 Color.parseColor("#BFD0FF")))
         }
         cd.addView(space(dp(6)))
+        setQuickNext("おまかせ") {
+            // まだ2匹選んでいなければランダムで埋めて観戦へ
+            val rest = engine.alive().filter { !predictedWolves.contains(it.id) }.shuffled()
+            for (p2 in rest) {
+                if (predictedWolves.size >= 2) break
+                predictedWolves.add(p2.id)
+            }
+            predictionActive = true
+            onContinue()
+        }
         cd.addView(btn("やっぱり戻る") {
             predictedWolves.clear()
             showHumanDead("……", onContinue)
@@ -2260,6 +2297,7 @@ class MainActivity : Activity() {
         cd.addView(tv("【本当の人狼】" + actual.joinToString("、") { e.players[it].pname },
             14f, true, Color.parseColor("#FF9B9B")))
         cd.addView(space(dp(14)))
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -2357,6 +2395,7 @@ class MainActivity : Activity() {
             showFreeTalk()
         })
         cd.addView(space(dp(10)))
+        setQuickNext("もどる") { showFreeTalk() }
         cd.addView(btn("やめておく") { showFreeTalk() })
         pn.addView(cd)
         setScreen(pn)
@@ -2697,6 +2736,7 @@ class MainActivity : Activity() {
         pn.addView(diffBtn, LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
 
+        setQuickNext("はじめる") { startGame() }
         pn.addView(btn("はじめる", Color.parseColor("#D8703D")) { startGame() },
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
@@ -2798,6 +2838,7 @@ class MainActivity : Activity() {
             11f, false, Color.parseColor("#BFD0FF")))
         cd.addView(space(dp(14)))
 
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -2856,6 +2897,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(6)))
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -2918,6 +2960,7 @@ class MainActivity : Activity() {
             Color.parseColor("#A8D8FF")))
 
         cd.addView(space(dp(14)))
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -2965,6 +3008,7 @@ class MainActivity : Activity() {
             cd.addView(space(dp(6)))
         }
 
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -3005,6 +3049,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(6)))
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -3060,6 +3105,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(12)))
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -3125,6 +3171,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(14)))
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -3212,6 +3259,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(12)))
+        setQuickNext("もどる") { chatLog = ArrayList(); showZukan() }
         cd.addView(btn("図鑑へもどる", Color.parseColor("#D8703D")) {
             chatLog = ArrayList(); showZukan()
         })
@@ -3507,6 +3555,7 @@ class MainActivity : Activity() {
         cd.addView(space(dp(18)))
 
         cd.addView(space(dp(14)))
+        setQuickNext("もどる") { showTitle() }
         cd.addView(btn("タイトルへ戻る") { showTitle() })
         pn.addView(cd)
         setScreen(pn)
@@ -3654,6 +3703,7 @@ class MainActivity : Activity() {
         cd.addView(space(dp(8)))
         cd.addView(tv(msg))
         cd.addView(space(dp(16)))
+        setQuickNext("朝へ") { finishNight(null, null, null) }
         cd.addView(btn("朝を待つ", Color.parseColor("#5A4FD8")) { finishNight(null, null, null) })
         pn.addView(cd)
         addNightVictims(pn)
@@ -3673,6 +3723,9 @@ class MainActivity : Activity() {
         cd.addView(tv("襲撃する相手を選んでください"))
         cd.addView(space(dp(10)))
         val cands = engine.alive().filter { !it.role.isWolf }
+        setQuickNext("おまかせ") {
+            confirmRandomPick("襲撃する相手", cands) { t -> finishNight(t, null, null) }
+        }
         cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t -> finishNight(t, null, null) })
         pn.addView(cd)
         addNightVictims(pn)
@@ -3689,6 +3742,9 @@ class MainActivity : Activity() {
         val known = engine.humanSeerResults.keys
         var cands = engine.alive().filter { it.id != engine.humanId && !known.contains(it.id) }
         if (cands.isEmpty()) cands = engine.alive().filter { it.id != engine.humanId }
+        setQuickNext("おまかせ") {
+            confirmRandomPick("占う相手", cands) { t -> finishNight(null, t, null) }
+        }
         cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t -> finishNight(null, t, null) })
         pn.addView(cd)
         addNightVictims(pn)
@@ -3712,6 +3768,9 @@ class MainActivity : Activity() {
             cands = engine.alive().filter { it.id != engine.humanId }
         }
         cd.addView(space(dp(10)))
+        setQuickNext("おまかせ") {
+            confirmRandomPick("護衛する相手", cands) { t -> finishNight(null, null, t) }
+        }
         cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t -> finishNight(null, null, t) })
         pn.addView(cd)
         addNightVictims(pn)
@@ -3739,6 +3798,7 @@ class MainActivity : Activity() {
         cd.addView(tv("※この結果はあなただけが知っています。昼にCO（公開）できます。", 12f,
             false, Color.parseColor("#BFD0FF")))
         cd.addView(space(dp(14)))
+        setQuickNext("朝へ") { showMorning() }
         cd.addView(btn("朝になる") { showMorning() })
         pn.addView(cd)
         setScreen(pn)
@@ -3787,11 +3847,16 @@ class MainActivity : Activity() {
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
         } else if (v != null && v.id == e.humanId) {
             // あなたが襲撃された → やられた画面へ
+            setQuickNext("次へ") {
+                nightNextAfterDeath = false
+                showHumanDead("昨夜、人狼に襲撃されてしまった…") { showSeerPhase() }
+            }
             cd.addView(btn("次へ", Color.parseColor("#5A4FD8")) {
                 nightNextAfterDeath = false   // 次は昼フェーズから
                 showHumanDead("昨夜、人狼に襲撃されてしまった…") { showSeerPhase() }
             })
         } else {
+            setQuickNext("占い師フェーズへ") { showSeerPhase() }
             cd.addView(btn("🔮 占い師フェーズへ") { showSeerPhase() })
         }
         pn.addView(cd)
@@ -3878,6 +3943,10 @@ class MainActivity : Activity() {
                 "・名乗り出ると結果を発表できますが、人狼に狙われやすくなります。\n" +
                 "・ここで名乗り出ないと、以後名乗り出ることはできません。", 14f))
             cd.addView(space(dp(14)))
+            setQuickNext("隠れる") {
+                e.ensureSeerPhase(false)
+                renderSeerPhase()
+            }
             cd.addView(btn("🔮 名乗り出る（CO）", Color.parseColor("#7A4FD8")) {
                 e.ensureSeerPhase(true)
                 renderSeerPhase()
@@ -4121,6 +4190,12 @@ class MainActivity : Activity() {
         cd.addView(tv("処刑する相手に投票してください"))
         cd.addView(space(dp(10)))
         val cands = e.alive().filter { it.id != e.humanId }
+        setQuickNext("おまかせ") {
+            confirmRandomPick("投票する相手", cands) { t ->
+                val ex = e.runVote(t)
+                showExecution(ex)
+            }
+        }
         cd.addView(charGridFixed(cands.map { it.id }.toSet(), 72) { t ->
             val ex = e.runVote(t)
             showExecution(ex)
@@ -4156,11 +4231,16 @@ class MainActivity : Activity() {
             setQuickNext("結果へ") { showGameOver(w) }
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
         } else if (ex.id == e.humanId) {
+            setQuickNext("次へ") {
+                nightNextAfterDeath = true
+                showHumanDead("投票で処刑されてしまった…") { beginNight() }
+            }
             cd.addView(btn("次へ", Color.parseColor("#5A4FD8")) {
                 nightNextAfterDeath = true   // 次は夜から
                 showHumanDead("投票で処刑されてしまった…") { beginNight() }
             })
         } else {
+            setQuickNext("夜へ") { beginNight() }
             cd.addView(btn("夜になる", Color.parseColor("#5A4FD8")) { beginNight() })
         }
         pn.addView(cd)
@@ -4306,6 +4386,7 @@ class MainActivity : Activity() {
             })
             cd.addView(space(dp(8)))
         }
+        setQuickNext("もう一度") { startGame() }
         cd.addView(btn("もう一度あそぶ", Color.parseColor("#D8703D")) { startGame() })
         cd.addView(space(dp(8)))
         cd.addView(btn("タイトルへ") { showTitle() })
@@ -4382,6 +4463,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(14)))
+        setQuickNext("もどる") { showGameOver(moodVictory) }
         cd.addView(btn("結果にもどる", Color.parseColor("#D8703D")) { showGameOver(moodVictory) })
         pn.addView(cd)
         setScreen(pn)
