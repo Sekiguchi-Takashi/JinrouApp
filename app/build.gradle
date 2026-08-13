@@ -11,8 +11,8 @@ android {
         applicationId "com.sekiguchi.jinrou"
         minSdk 26
         targetSdk 34
-        versionCode 19
-        versionName "3.1"
+        versionCode 22
+        versionName "3.4"
     }
 
     androidResources {

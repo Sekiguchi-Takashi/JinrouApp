@@ -146,6 +146,22 @@ class GameEngine {
 
     fun buildHints(): List<String> {
         val hints = ArrayList<String>()
+
+        // 自己紹介による絞り込み（人狼は各グループに1人ずつ）
+        if (introDone) {
+            val saidAlive = players.filter { introDenied.contains(it.id) && it.alive }
+            val silentAlive = players.filter { !introDenied.contains(it.id) && it.alive }
+            hints.add("🗣️ 自己紹介では、人狼は「人狼ではないと言った人」に1人、「言わなかった人」に1人ひそんでいます。" +
+                "いま生き残っているのは、言った人が${saidAlive.size}人、言わなかった人が${silentAlive.size}人。")
+            if (saidAlive.size == 1 && saidAlive[0].alive) {
+                hints.add("🎯 「人狼ではない」と言ったグループで生き残っているのは ${saidAlive[0].pname} だけ。" +
+                    "そのグループの人狼がまだ生きているなら、この人が該当します。")
+            }
+            if (silentAlive.size == 1 && silentAlive[0].alive) {
+                hints.add("🎯 「何も言わなかった」グループで生き残っているのは ${silentAlive[0].pname} だけ。" +
+                    "そのグループの人狼がまだ生きているなら、この人が該当します。")
+            }
+        }
         val claimAlive = seerClaimants.map { players[it] }.filter { it.alive }
 
         // 占い師CO状況
@@ -452,6 +468,70 @@ class GameEngine {
     }
 
     // 今朝の占い師フェーズの発言（名乗り出た者だけが話す）
+    // ---------- 自己紹介フェーズ（1日目のみ） ----------
+    // 各キャラが番号順に名乗る。「自分は人狼ではない」と言う組と言わない組に分かれる。
+    // 人狼2匹は必ず片方ずつ（言う組・言わない組）に分かれて紛れ込む。
+    val introDenied = LinkedHashSet<Int>()   // 「人狼ではない」と明言したキャラのid
+    var introDone = false
+
+    // あなたの視点で「人狼だと確定している」キャラか？
+    // （自分が人狼なら仲間、自分の占い結果で黒、霊能で人狼と判明、ゲーム終了後は全員）
+    fun isWolfConfirmed(p: Player, revealAll: Boolean): Boolean {
+        if (revealAll) return p.role.isWolf
+        val me = players.getOrNull(humanId) ?: return false
+        // 人狼は仲間を知っている
+        if (me.role.isWolf && p.role.isWolf) return true
+        // 自分が占った結果
+        if (humanSeerResults[p.id] == true) return true
+        // 自分が霊能で確認した結果
+        if (humanMediumResults[p.id] == true) return true
+        return false
+    }
+
+    fun buildIntroTalks(): List<Talk> {
+        introDenied.clear()
+        val all = players.toList()
+        val wolves = all.filter { it.role.isWolf }
+        // 「言う」人数は4人または5人
+        val sayCount = if (Random.nextBoolean()) 4 else 5
+        val sayers = LinkedHashSet<Int>()
+        // 人狼を1匹だけ「言う組」に入れる（もう1匹は自動的に言わない組）
+        if (wolves.isNotEmpty()) sayers.add(wolves.random().id)
+        // 残りの枠を人狼以外からランダムに埋める
+        val others = all.filter { !it.role.isWolf }.shuffled()
+        for (p in others) {
+            if (sayers.size >= sayCount) break
+            sayers.add(p.id)
+        }
+        introDenied.addAll(sayers)
+
+        val talks = ArrayList<Talk>()
+        for (p in all) {   // id順（＝番号順）に自己紹介
+            val says = sayers.contains(p.id)
+            val text = if (says) {
+                when (p.animal.persona) {
+                    "げんき" -> "${p.pname}だよ！ぼくは人狼じゃない、ぜったいに！"
+                    "クール" -> "${p.pname}だ。……先に言っておく。私は人狼ではない。"
+                    "しんぱいしょう" -> "${p.pname}です…ぼ、ぼくは人狼じゃないです…信じてください…"
+                    "れいせい" -> "${p.pname}です。断言します。私は人狼ではありません。"
+                    "ものしり" -> "${p.pname}だ。結論から言おう、私は人狼ではない。"
+                    else -> "${p.pname}です。わたしは人狼じゃありません！"
+                }
+            } else {
+                when (p.animal.persona) {
+                    "きまぐれ" -> "${p.pname}だニャ。ま、名前だけ言っておくね。"
+                    "マイペース" -> "${p.pname}です…ん〜、あとはまだ言わないでおこうかな。"
+                    "おっとり" -> "${p.pname}だよ。よろしくねぇ。"
+                    "しっかり" -> "${p.pname}よ。今はまだ、様子を見させてもらうわ。"
+                    else -> "${p.pname}です。まずはよろしく。"
+                }
+            }
+            talks.add(Talk(p.id, text, p.id, false))
+        }
+        introDone = true
+        return talks
+    }
+
     fun seerPhaseTalks(): List<Talk> {
         val talks = ArrayList<Talk>()
         var realTalk: Talk? = null
@@ -1838,6 +1918,18 @@ class MainActivity : Activity() {
             blp.gravity = Gravity.TOP or Gravity.START
             stack.addView(badge, blp)
         }
+        // 🐺 人狼だと確定しているキャラに狼マークを重ねる
+        if (engine.isWolfConfirmed(pl, moodVictory != 0)) {
+            val resId = resources.getIdentifier("wolf_mark", "drawable", packageName)
+            if (resId != 0) {
+                val wolf = android.widget.ImageView(this)
+                wolf.setImageResource(resId)
+                val wsz = (sizeDp * 0.52f).toInt().coerceAtLeast(22)
+                val wlp = FrameLayout.LayoutParams(dp(wsz), dp(wsz))
+                wlp.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                stack.addView(wolf, wlp)
+            }
+        }
         cell.addView(stack)
 
         val nameText = pl.pname + if (!pl.alive) " †" else ""
@@ -2114,6 +2206,13 @@ class MainActivity : Activity() {
     private var freeTalksToday = ArrayList<Talk>()
 
     private fun startFreeTalk() {
+        // 1日目でまだ自己紹介をしていなければ、必ず自己紹介から始める
+        if (engine.dayCount == 1 && !engine.introDone) {
+            introTalks = ArrayList(engine.buildIntroTalks())
+            introReveal = 1
+            showIntro()
+            return
+        }
         freeTalksToday = ArrayList(engine.freeTalks())
         showFreeTalk()
     }
@@ -2246,16 +2345,29 @@ class MainActivity : Activity() {
             t.text.contains("信用") || t.text.contains("信頼") || t.text.contains("♪") -> 1
             else -> 0
         }
-        // 番号オプションON時は、話しているキャラにも固定番号を重ねる
-        if (optNumbering) {
+        // 番号や確定人狼マークを重ねる必要があるときはFrameLayoutで包む
+        val confirmed = engine.isWolfConfirmed(sp, moodVictory != 0)
+        if (optNumbering || confirmed) {
             val stack = FrameLayout(this)
             stack.clipChildren = false   // 跳ねるアニメで頭が切れないように
             stack.addView(cvv, FrameLayout.LayoutParams(dp(52), dp(52)))
-            val num = "①②③④⑤⑥⑦⑧⑨".getOrNull(sp.animal.ordinal)?.toString() ?: ""
-            val badge = tv(num, 17f, true, Color.parseColor("#FFE28A"))
-            val blp = FrameLayout.LayoutParams(-2, -2)
-            blp.gravity = Gravity.TOP or Gravity.START
-            stack.addView(badge, blp)
+            if (optNumbering) {
+                val num = "①②③④⑤⑥⑦⑧⑨".getOrNull(sp.animal.ordinal)?.toString() ?: ""
+                val badge = tv(num, 17f, true, Color.parseColor("#FFE28A"))
+                val blp = FrameLayout.LayoutParams(-2, -2)
+                blp.gravity = Gravity.TOP or Gravity.START
+                stack.addView(badge, blp)
+            }
+            if (confirmed) {
+                val resId = resources.getIdentifier("wolf_mark", "drawable", packageName)
+                if (resId != 0) {
+                    val wolf = android.widget.ImageView(this)
+                    wolf.setImageResource(resId)
+                    val wlp = FrameLayout.LayoutParams(dp(26), dp(26))
+                    wlp.gravity = Gravity.BOTTOM or Gravity.END
+                    stack.addView(wolf, wlp)
+                }
+            }
             left.addView(stack, LinearLayout.LayoutParams(dp(52), dp(52)))
         } else {
             left.addView(cvv, LinearLayout.LayoutParams(dp(52), dp(52)))
@@ -2400,6 +2512,20 @@ class MainActivity : Activity() {
         outer.addView(space(dp(4)))
         outer.addView(tv("これまでの発言・投票・能力の記録", 12f, false, Color.parseColor("#BFD0FF")))
         outer.addView(space(dp(10)))
+
+        // 自己紹介フェーズの記録（1日目に全員が名乗った内容）
+        if (e.introDone) {
+            outer.addView(tv("🗣️ 自己紹介（1日目）", 15f, true, Color.parseColor("#FFD08A")))
+            outer.addView(tv("人狼は「言った人」に1人、「言わなかった人」に1人います", 11f, false,
+                Color.parseColor("#BFD0FF")))
+            val said = e.players.filter { e.introDenied.contains(it.id) }
+            val silent = e.players.filter { !e.introDenied.contains(it.id) }
+            outer.addView(tv("「人狼ではない」と言った: " + said.joinToString("、") {
+                it.pname + if (!it.alive) "†" else "" }, 13f, false, Color.parseColor("#C8F0C2")))
+            outer.addView(tv("何も言わなかった: " + silent.joinToString("、") {
+                it.pname + if (!it.alive) "†" else "" }, 13f, false, Color.parseColor("#FFE0B0")))
+            outer.addView(space(dp(10)))
+        }
 
         // 能力・出来事の履歴
         outer.addView(tv("🔮 能力・出来事", 15f, true, Color.parseColor("#A8D8FF")))
@@ -3044,72 +3170,265 @@ class MainActivity : Activity() {
     private fun giftReaction(name: String, gift: String): String =
         "$name「わぁ、$gift だ！ありがとう、大切にするね！（好感度が上がった）」"
 
+    // ---------- ルール図解用の部品 ----------
+
+    // 1日の流れの1ステップ（アイコン＋見出し＋説明）
+    private fun flowStep(icon: String, title: String, lines: List<String>, accent: String): LinearLayout {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.HORIZONTAL
+        box.setPadding(dp(10), dp(10), dp(10), dp(10))
+        box.background = GradientDrawable().apply {
+            cornerRadius = dp(12).toFloat()
+            setColor(Color.argb(46, 255, 255, 255))
+            setStroke(dp(2), Color.parseColor(accent))
+        }
+        val ic = tv(icon, 26f)
+        ic.setPadding(0, 0, dp(10), 0)
+        box.addView(ic)
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(tv(title, 15f, true, Color.parseColor(accent)))
+        for (l in lines) col.addView(tv("・$l", 13f))
+        box.addView(col)
+        return box
+    }
+
+    // ステップ間をつなぐ下向き矢印
+    private fun flowArrow(): TextView {
+        val t = tv("▼", 16f, true, Color.parseColor("#8FA0C8"))
+        t.gravity = Gravity.CENTER
+        t.setPadding(0, dp(2), 0, dp(2))
+        return t
+    }
+
+    // セクションの見出し帯
+    private fun sectionBar(text: String, color: String): TextView {
+        val t = tv(text, 16f, true, Color.WHITE)
+        t.setPadding(dp(12), dp(8), dp(12), dp(8))
+        t.background = GradientDrawable().apply {
+            cornerRadius = dp(8).toFloat()
+            setColor(Color.parseColor(color))
+        }
+        return t
+    }
+
+    // 役職カード（アイコン・名前・人数・能力）
+    private fun roleCard(icon: String, name: String, count: String, desc: String,
+                         accent: String): LinearLayout {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(dp(8), dp(7), dp(8), dp(7))
+        row.background = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(Color.argb(38, 255, 255, 255))
+            setStroke(dp(1), Color.parseColor(accent))
+        }
+        val ic = tv(icon, 20f)
+        ic.setPadding(0, 0, dp(8), 0)
+        row.addView(ic)
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.addView(tv(name, 14f, true, Color.parseColor(accent)))
+        val cnt = tv(" $count", 12f, true, Color.parseColor("#FFE28A"))
+        head.addView(cnt)
+        col.addView(head)
+        col.addView(tv(desc, 12f, false, Color.parseColor("#DCE4FF")))
+        row.addView(col)
+        return row
+    }
+
+    // 勝利条件の対戦表カード
+    private fun winCard(icon: String, team: String, cond: String, accent: String): LinearLayout {
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.gravity = Gravity.CENTER_HORIZONTAL
+        box.setPadding(dp(8), dp(10), dp(8), dp(10))
+        box.background = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(Color.argb(40, 255, 255, 255))
+            setStroke(dp(2), Color.parseColor(accent))
+        }
+        val i = tv(icon, 26f); i.gravity = Gravity.CENTER
+        box.addView(i)
+        val t = tv(team, 13f, true, Color.parseColor(accent)); t.gravity = Gravity.CENTER
+        box.addView(t)
+        val c = tv(cond, 11f, false, Color.WHITE); c.gravity = Gravity.CENTER
+        box.addView(c)
+        return box
+    }
+
     private fun showRules() {
         val pn = panel()
         val cd = card()
         cd.addView(tv("📖 ルール", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("9人の中にひそむ2匹の人狼を、話し合いと投票で見つけ出そう！",
+            13f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(8)))
+        val toc = LinearLayout(this)
+        toc.orientation = LinearLayout.VERTICAL
+        toc.setPadding(dp(10), dp(8), dp(10), dp(8))
+        toc.background = GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(Color.argb(40, 255, 255, 255))
+        }
+        toc.addView(tv("このページの内容", 12f, true, Color.parseColor("#FFE28A")))
+        toc.addView(tv("🏆 勝利条件 → 🔄 ゲームの流れ → 🎭 役職 → 🔎 占いの早見表 → ✨ 特別な仕組み → ⚙️ オプション",
+            12f, false, Color.parseColor("#DCE4FF")))
+        cd.addView(toc)
+        cd.addView(space(dp(12)))
+
+        // ============ 勝利条件（対戦カード） ============
+        cd.addView(sectionBar("🏆 勝利条件", "#3D6BD8"))
+        cd.addView(space(dp(8)))
+        val winRow = LinearLayout(this)
+        winRow.orientation = LinearLayout.HORIZONTAL
+        val w1 = LinearLayout.LayoutParams(0, -2, 1f).also { it.setMargins(0, 0, dp(4), 0) }
+        val w2 = LinearLayout.LayoutParams(0, -2, 1f).also { it.setMargins(dp(4), 0, 0, 0) }
+        winRow.addView(winCard("🏘️", "村人チーム", "人狼を全員\n処刑すれば勝ち", "#A8E6A1"), w1)
+        winRow.addView(winCard("🐺", "人狼チーム", "人狼の数が村人側と\n同数になれば勝ち", "#FF9B9B"), w2)
+        cd.addView(winRow)
+        cd.addView(space(dp(6)))
+        val winRow2 = LinearLayout(this)
+        winRow2.orientation = LinearLayout.HORIZONTAL
+        winRow2.addView(winCard("🦊", "妖狐（第三）", "決着時に生きていれば\n単独勝ち", "#E0A8FF"), w1)
+        winRow2.addView(winCard("💕", "恋人（第三）", "2人だけ生き残れば\n2人の勝ち", "#FF9BD0"), w2)
+        cd.addView(winRow2)
+        cd.addView(space(dp(6)))
+        cd.addView(tv("※ 恋人はオプションでONにしたときだけ登場します",
+            11f, false, Color.parseColor("#9AA0B5")))
+        cd.addView(space(dp(16)))
+
+        // ============ 1日の流れ（フロー図） ============
+        cd.addView(sectionBar("🔄 ゲームの流れ", "#7A4FD8"))
+        cd.addView(space(dp(8)))
+        cd.addView(tv("【 1日目だけ 】", 12f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(4)))
+        cd.addView(flowStep("🗣️", "自己紹介", listOf(
+            "1番から順に全員が名乗る",
+            "「人狼ではない」と言う人が4〜5人、言わない人が残り",
+            "人狼は 言った組に1人・言わない組に1人 必ずいる",
+            "どちらだったか覚えておくと終盤で絞り込める"), "#FFD08A"))
+        cd.addView(flowArrow())
+        cd.addView(tv("【 ここから毎日くり返し 】", 12f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(4)))
+        cd.addView(flowStep("🔮", "占い師フェーズ（2日目〜）", listOf(
+            "占い師を名乗る人が結果を発表",
+            "人狼や狂人が偽占い師として出ることも",
+            "名乗り出るのは最初の1回だけ"), "#C9B6FF"))
+        cd.addView(flowArrow())
+        cd.addView(flowStep("☕", "自由会話", listOf(
+            "みんなが自由に発言（無言の人も）",
+            "キャラをタップして「人狼だと思う相手」を伝えられる（1日1回）",
+            "相手が人狼で相方を教えると、夜に狙われる！"), "#A8D8FF"))
+        cd.addView(flowArrow())
+        cd.addView(flowStep("💬", "話し合い", listOf(
+            "全員で議論。疑い・信頼の発言が飛び交う",
+            "怪しい人に🚩旗を立てられる（最大＝生存人狼数）",
+            "👀は今いちばん疑われている人の印"), "#FFE28A"))
+        cd.addView(flowArrow())
+        cd.addView(flowStep("⚖️", "投票 → 処刑", listOf(
+            "全員が1人に投票し、最多票の人が処刑される",
+            "1日目の昼は処刑なし（手がかりがないため）"), "#FF9B9B"))
+        cd.addView(flowArrow())
+        cd.addView(flowStep("🌙", "夜", listOf(
+            "🐺 人狼が1人を襲撃",
+            "🔮 占い師が1人を占う",
+            "🛡️ 狩人が1人を護衛（守れれば犠牲者なし）"), "#5A4FD8"))
+        cd.addView(flowArrow())
+        cd.addView(flowStep("☀️", "朝", listOf(
+            "襲撃された人が判明（護衛成功なら0人）",
+            "👻 霊能者は前日処刑された人の正体を知る"), "#FFD450"))
+        cd.addView(space(dp(4)))
+        val loop = tv("⤴ 決着がつくまでくり返し", 12f, true, Color.parseColor("#8FA0C8"))
+        loop.gravity = Gravity.CENTER
+        cd.addView(loop)
+        cd.addView(space(dp(16)))
+
+        // ============ 役職一覧（陣営ごと） ============
+        cd.addView(sectionBar("🎭 役職（全9人）", "#3D9E6B"))
+        cd.addView(space(dp(8)))
+        cd.addView(tv("🏘️ 村人チーム", 14f, true, Color.parseColor("#A8E6A1")))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("🧑‍🌾", "村人", "×2", "能力なし。推理と投票で村を守る", "#C8F0C2"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("🔮", "占い師", "×1", "毎晩1人を占い、人狼かどうか分かる", "#C9B6FF"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("👻", "霊能者", "×1", "処刑された人が人狼だったか分かる", "#A8D8FF"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("🛡️", "狩人", "×1", "毎晩1人を襲撃から守る", "#8FD0FF"))
         cd.addView(space(dp(10)))
-        cd.addView(tv("【ゲームの流れ】", 15f, true))
-        cd.addView(tv(
-            "☀️ 1日目の昼\n" +
-            "・まだ手がかりがないので、みんなの会話は勘だより。\n" +
-            "・投票を行い、最も票が多かった人が処刑されます。", 14f))
-        cd.addView(space(dp(8)))
-        cd.addView(tv(
-            "🌙 夜\n" +
-            "・人狼が襲撃する相手を決めます。\n" +
-            "・占い師が1人を占います。\n" +
-            "・狩人が1人を護衛します。\n" +
-            "・朝になると、襲撃された人（護衛成功なら0人）が判明します。", 14f))
-        cd.addView(space(dp(8)))
-        cd.addView(tv(
-            "🔮 占い師フェーズ（2日目の朝から）\n" +
-            "・占い師と主張する人が結果を発表します。\n" +
-            "・人狼のうち1人が偽占い師として名乗り出ることも！\n" +
-            "・偽物は人狼以外を「人狼」と言ったり、本物のマネをしたりします。\n" +
-            "・名乗り出るのは最初だけ。途中から名乗り出ることはできません。\n" +
-            "・占い師が2人いるとき、狩人はどちらかを必ず護衛します。", 14f))
-        cd.addView(space(dp(8)))
-        cd.addView(tv(
-            "☕ 自由会話（話し合いの前）\n" +
-            "・みんなが自由に発言します（無言のキャラも）。\n" +
-            "・キャラをタップすると「人狼だと思う相手」をこっそり伝えられます（1日1回）。\n" +
-            "・成功するとそのキャラが投票で同調してくれることも。\n" +
-            "・ただし相手が人狼で、相方の人狼を伝えてしまうと…夜に狙われます！\n" +
-            "・予想が公開の場で外れると信用を失い、説得しても無視されます。", 14f))
-        cd.addView(space(dp(8)))
-        cd.addView(tv(
-            "🎩 名探偵\n" +
-            "・投票で2回連続人狼を当てたキャラは「名探偵」に！（開票に負けてもOK）\n" +
-            "・それ以降、みんなが名探偵の予想に同調して投票します。\n" +
-            "・名探偵だけを説得できれば、村全体の票を動かせます。\n" +
-            "・ただし人狼が名探偵を説得しようとすると、2回に1回バレます！", 14f))
-        cd.addView(space(dp(8)))
-        cd.addView(tv(
-            "💬 昼\n" +
-            "・生き残った全員で話し合います。\n" +
-            "・占い師フェーズで怪しいと言われた人は疑われやすくなります。\n" +
-            "・投票 → 処刑 → また夜になります。", 14f))
+        cd.addView(tv("🐺 人狼チーム", 14f, true, Color.parseColor("#FF9B9B")))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("🐺", "人狼", "×2", "毎晩1人を襲撃。仲間が誰か分かる", "#FF9B9B"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("🌀", "狂人", "×1", "人間だが人狼の味方。占いでは白と出る／仲間は知らない", "#FFC98A"))
         cd.addView(space(dp(10)))
-        cd.addView(tv("【勝利条件】", 15f, true))
-        cd.addView(tv(
-            "・村人チーム：すべての人狼を処刑すれば勝利。\n" +
-            "・人狼チーム：人狼の人数が村人側の人数と同じになれば勝利。", 14f))
+        cd.addView(tv("🦊 第三陣営", 14f, true, Color.parseColor("#E0A8FF")))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("🦊", "妖狐", "×1", "占われると死ぬが襲撃では死なない。最後まで生き残れば単独勝利", "#E0A8FF"))
         cd.addView(space(dp(10)))
-        cd.addView(tv("【構成（総数9人）】", 15f, true))
-        cd.addView(tv("村人 ×2 / 占い師 ×1 / 霊能者 ×1 / 狩人 ×1 / 人狼 ×2 / 狂人 ×1 / 妖狐 ×1", 14f))
+        cd.addView(tv("＋オプションで追加", 13f, true, Color.parseColor("#BFD0FF")))
         cd.addView(space(dp(4)))
-        cd.addView(tv("🤝 タイトルで「共有者ルール」をONにすると、村人2枠が共有者2人になります。共有者はお互いが誰か分かり、確実に人狼ではないと確認し合えます（村人陣営が有利になります）。",
-            13f, false, Color.parseColor("#A8E6A1")))
+        cd.addView(roleCard("🤝", "共有者", "×2", "村人2枠と交代。お互いが誰か分かり、確実に人狼ではないと確認できる", "#A8E6A1"))
         cd.addView(space(dp(4)))
-        cd.addView(tv("⚙️ 難易度はタイトルで切替できます。むずかしいほどCPUの推理・連携が賢くなります（人狼が占い師を狙いやすく、名探偵への同調も強まります）。",
-            13f, false, Color.parseColor("#FFE28A")))
+        cd.addView(roleCard("💕", "恋人", "×2", "役職とは別。片方が死ぬともう片方も後を追う", "#FF9BD0"))
+        cd.addView(space(dp(16)))
+
+        // ============ 占いの見分け方（早見表） ============
+        cd.addView(sectionBar("🔎 占い結果の早見表", "#D8703D"))
+        cd.addView(space(dp(8)))
+        cd.addView(tv("占い師が「人狼」と判定するのは人狼だけ。それ以外は全員「人狼ではない」と出ます。",
+            12f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        cd.addView(roleCard("⚫", "人狼", "→ 人狼！", "唯一の黒判定", "#FF9B9B"))
         cd.addView(space(dp(4)))
-        cd.addView(tv("🦊 妖狐は第三陣営。占い師に占われると死にますが、人狼の襲撃では死にません。誰も勝敗が決まったときに生き残っていれば、妖狐だけの勝ちになります。",
-            13f, false, Color.parseColor("#E0A8FF")))
+        cd.addView(roleCard("⚪", "村人・占い師・霊能者・狩人・共有者", "→ 人狼ではない", "正真正銘の白", "#C8F0C2"))
         cd.addView(space(dp(4)))
-        cd.addView(tv("🌀 狂人は人間ですが人狼陣営。占いでは白（人狼ではない）と出ますが、人狼を勝たせようと動きます。人狼が誰かは知りません。",
-            13f, false, Color.parseColor("#FFC98A")))
+        cd.addView(roleCard("⚪", "狂人", "→ 人狼ではない", "白と出るが人狼の味方！注意", "#FFC98A"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("💀", "妖狐", "→ 人狼ではない", "白と出るが、占われた本人は死んでしまう", "#E0A8FF"))
+        cd.addView(space(dp(16)))
+
+        // ============ 特別な仕組み ============
+        cd.addView(sectionBar("✨ 特別な仕組み", "#7A9BD8"))
+        cd.addView(space(dp(8)))
+        cd.addView(flowStep("🎩", "名探偵", listOf(
+            "投票で2回連続人狼を当てると「名探偵」に",
+            "以降みんなが名探偵の予想に同調して投票する",
+            "名探偵を説得できれば村全体の票が動く",
+            "人狼が説得すると2回に1回バレる！"), "#FFE28A"))
+        cd.addView(space(dp(6)))
+        cd.addView(flowStep("🚩", "旗と👀マーク", listOf(
+            "怪しい人に旗を立てられる（最大＝生存している人狼の数）",
+            "旗を立てた相手には、信用があれば仲間が同調してくれる",
+            "👀はその時いちばん疑われている人の印"), "#FF9B9B"))
+        cd.addView(space(dp(6)))
+        cd.addView(flowStep("📓", "推理ノート・ヒント", listOf(
+            "話し合い画面から、発言・投票・占い結果の履歴を確認できる",
+            "🔍ヒントでは今の状況からAIが推理の助言をくれる"), "#A8D8FF"))
+        cd.addView(space(dp(16)))
+
+        // ============ オプション ============
+        cd.addView(sectionBar("⚙️ オプション", "#3D6BD8"))
+        cd.addView(space(dp(8)))
+        cd.addView(tv("タイトルの「⚙️オプション」から設定できます。", 12f, false,
+            Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        cd.addView(roleCard("👤", "人モード", "", "どうぶつのかわりに9人の人間キャラで遊ぶ", "#7A9BD8"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("🎚️", "難易度", "易/普/難", "むずかしいほどCPUの推理と連携が賢くなる", "#FFE28A"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("①", "番号表示", "", "9人に固定の番号をつけて見分けやすくする", "#FFD08A"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("📊", "生存数・有利率", "", "残り人数や人狼の有利率を画面に表示", "#A8D8FF"))
+        cd.addView(space(dp(4)))
+        cd.addView(roleCard("▶", "1人ずつ送り", "", "会話をまとめず1人ずつ順番に表示する", "#C8F0C2"))
+        cd.addView(space(dp(18)))
+
         cd.addView(space(dp(14)))
         cd.addView(btn("タイトルへ戻る") { showTitle() })
         pn.addView(cd)
@@ -3206,7 +3525,9 @@ class MainActivity : Activity() {
         cd.addView(space(dp(16)))
         cd.addView(btn("1日目の昼へ", Color.parseColor("#D8703D")) {
             currentTalks = ArrayList()
-            startFreeTalk()
+            introTalks = ArrayList(engine.buildIntroTalks())
+            introReveal = 1
+            showIntro()
         })
         pn.addView(cd)
         setScreen(pn)
@@ -3393,6 +3714,65 @@ class MainActivity : Activity() {
     }
 
     // ---------- 占い師フェーズ（2日目の朝から・昼の前） ----------
+
+    // ---------- 自己紹介フェーズ（1日目） ----------
+
+    private var introTalks = ArrayList<Talk>()
+    private var introReveal = 0
+
+    private fun showIntro() {
+        val e = engine
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🗣️ 自己紹介", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(tv("1番から順に名乗ります。「自分は人狼ではない」と言う人・言わない人がいます。よく覚えておきましょう。",
+            12f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(10)))
+
+        val shown = introReveal.coerceIn(0, introTalks.size)
+        for (i in 0 until shown) {
+            val t = introTalks[i]
+            val num = "①②③④⑤⑥⑦⑧⑨".getOrNull(e.players[t.speakerId].animal.ordinal)?.toString() ?: ""
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            val numTv = tv(num, 20f, true, Color.parseColor("#FFE28A"))
+            numTv.setPadding(0, 0, dp(6), 0)
+            row.addView(numTv)
+            row.addView(talkBubble(t), LinearLayout.LayoutParams(0, -2, 1f))
+            cd.addView(row)
+            cd.addView(space(dp(8)))
+        }
+
+        if (shown < introTalks.size) {
+            cd.addView(btn("次の人の自己紹介をきく ▶", Color.parseColor("#3D6BD8")) {
+                introReveal = (introReveal + 1).coerceAtMost(introTalks.size)
+                showIntro()
+            })
+            cd.addView(space(dp(6)))
+            cd.addView(tv("（$shown / ${introTalks.size} 人）", 12f, false, Color.parseColor("#BFD0FF")))
+            pn.addView(cd)
+            setScreen(pn, shown > 1)
+            return
+        }
+
+        // 全員終わったら、まとめて振り返れる一覧を表示
+        cd.addView(space(dp(6)))
+        cd.addView(tv("📋 「人狼ではない」と言った人", 15f, true, Color.parseColor("#A8E6A1")))
+        val said = e.players.filter { e.introDenied.contains(it.id) }
+        cd.addView(tv(said.joinToString("、") { it.pname }, 14f, false, Color.parseColor("#C8F0C2")))
+        cd.addView(space(dp(6)))
+        cd.addView(tv("🤐 何も言わなかった人", 15f, true, Color.parseColor("#FFD08A")))
+        val silent = e.players.filter { !e.introDenied.contains(it.id) }
+        cd.addView(tv(silent.joinToString("、") { it.pname }, 14f, false, Color.parseColor("#FFE0B0")))
+        cd.addView(space(dp(8)))
+        cd.addView(tv("💡 人狼は「言った人」の中に1人、「言わなかった人」の中に1人ひそんでいます。",
+            13f, true, Color.parseColor("#FF9B9B")))
+        cd.addView(space(dp(14)))
+        cd.addView(btn("話し合いへ", Color.parseColor("#D8703D")) { startFreeTalk() })
+        pn.addView(cd)
+        setScreen(pn)
+    }
 
     private fun showSeerPhase() {
         val e = engine
