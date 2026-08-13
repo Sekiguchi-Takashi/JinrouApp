@@ -1458,12 +1458,22 @@ class CharacterView(context: Context, private val animal: Animal, private var al
 
 class SummaryView(context: Context, private val engine: GameEngine,
                   private val suspects: List<Talk>,
-                  private val humanMode: Boolean = false) : View(context) {
+                  private val humanMode: Boolean = false,
+                  private val revealAll: Boolean = false) : View(context) {
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val humanCache = HashMap<Int, android.graphics.Bitmap?>()
+
+    private var wolfMark: android.graphics.Bitmap? = null
+    private fun wolfBmp(): android.graphics.Bitmap? {
+        if (wolfMark == null) {
+            val id = resources.getIdentifier("wolf_mark", "drawable", context.packageName)
+            if (id != 0) wolfMark = android.graphics.BitmapFactory.decodeResource(resources, id)
+        }
+        return wolfMark
+    }
 
     // 人モードの立ち絵（通常表情）を取得
     private fun humanBmp(animalOrdinal: Int): android.graphics.Bitmap? {
@@ -1481,7 +1491,11 @@ class SummaryView(context: Context, private val engine: GameEngine,
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
-        val av = engine.alive()
+        // 生存者に加えて「人狼と判明している死亡者」も残して表示する
+        val deadWolves = engine.players.filter {
+            !it.alive && engine.isWolfConfirmed(it, revealAll)
+        }
+        val av = engine.alive() + deadWolves
         if (av.isEmpty()) return
 
         val cx = w / 2f
@@ -1489,7 +1503,7 @@ class SummaryView(context: Context, private val engine: GameEngine,
         val charSize = w * 0.15f
         val radius = minOf(w, h) / 2f - charSize * 0.75f - w * 0.03f
 
-        // 各キャラの座標（生存者のみを円形配置）
+        // 各キャラの座標（円形配置）
         val pos = HashMap<Int, FloatArray>()
         av.forEachIndexed { i, pl ->
             val ang = (-Math.PI / 2 + 2 * Math.PI * i / av.size)
@@ -1525,9 +1539,22 @@ class SummaryView(context: Context, private val engine: GameEngine,
             } else {
                 CharacterArt.draw(c, pl.animal, q[0], q[1], charSize, pl.alive)
             }
-            tp.color = Color.WHITE
+            // 人狼と判明しているキャラには狼マークを重ねる
+            if (engine.isWolfConfirmed(pl, revealAll)) {
+                val wb = wolfBmp()
+                if (wb != null) {
+                    val ws = charSize * 0.62f
+                    val wdst = RectF(q[0] - ws / 2f, q[1] + charSize * 0.10f,
+                                     q[0] + ws / 2f, q[1] + charSize * 0.10f + ws)
+                    bmpPaint.alpha = 255
+                    bmpPaint.colorFilter = null
+                    c.drawBitmap(wb, null, wdst, bmpPaint)
+                }
+            }
+            tp.color = if (!pl.alive) Color.parseColor("#FFB0B0") else Color.WHITE
             tp.setShadowLayer(4f, 0f, 2f, Color.BLACK)
-            val nm = if (pl.id == engine.humanId) "${pl.pname}★" else pl.pname
+            var nm = if (pl.id == engine.humanId) "${pl.pname}★" else pl.pname
+            if (!pl.alive) nm += "†"
             c.drawText(nm, q[0], q[1] + charSize * 0.78f, tp)
             tp.clearShadowLayer()
         }
@@ -1731,6 +1758,7 @@ class MainActivity : Activity() {
     private var optAnalysis = false
     private var optWinrate = false
     private var optOnebyone = false
+    private var optQuickNext = true   // 右下に固定の「次へ」ボタンを出すか
     private var talkReveal = 0   // ⑤1人ずつ送り：表示済みの会話数
     private var humanMode = false   // 人モード：動物のかわりに人間の立ち絵を使う
 
@@ -1748,8 +1776,9 @@ class MainActivity : Activity() {
         root = FrameLayout(this)
         root.setBackgroundColor(Color.parseColor("#0E1430"))
         setContentView(root)
-        humanMode = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
-            .getBoolean("human_mode", false)
+        val sp0 = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+        humanMode = sp0.getBoolean("human_mode", false)
+        optQuickNext = sp0.getBoolean("opt_quicknext", true)
         showSplash()
     }
 
@@ -1796,6 +1825,16 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+    // 右下固定ボタンに割り当てる「次に進む」動作（画面ごとに設定）
+    private var quickNextAction: (() -> Unit)? = null
+    private var quickNextLabel: String = "次へ"
+
+    // 画面の主要な「次に進む」操作を右下の固定ボタンにも割り当てる
+    private fun setQuickNext(label: String, action: (() -> Unit)?) {
+        quickNextLabel = label
+        quickNextAction = action
+    }
+
     private fun setScreen(content: View, scrollToBottom: Boolean = false) {
         root.removeAllViews()
         val theme = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
@@ -1805,9 +1844,34 @@ class MainActivity : Activity() {
         sc.isFillViewport = true
         sc.addView(content)
         root.addView(sc, FrameLayout.LayoutParams(-1, -1))
+
+        // 右下に小さく固定の「次へ」ボタン（オプションでON時のみ）
+        val act = quickNextAction
+        if (optQuickNext && act != null) {
+            val fab = Button(this)
+            fab.text = "$quickNextLabel ▶"
+            fab.textSize = 13f
+            fab.setTextColor(Color.WHITE)
+            fab.isAllCaps = false
+            fab.setPadding(dp(14), dp(6), dp(14), dp(6))
+            fab.background = GradientDrawable().apply {
+                cornerRadius = dp(22).toFloat()
+                setColor(Color.parseColor("#D8703D"))
+                setStroke(dp(2), Color.argb(180, 255, 255, 255))
+            }
+            fab.elevation = dp(6).toFloat()
+            fab.setOnClickListener { act.invoke() }
+            val flp = FrameLayout.LayoutParams(-2, -2)
+            flp.gravity = Gravity.BOTTOM or Gravity.END
+            flp.setMargins(0, 0, dp(14), dp(18))
+            root.addView(fab, flp)
+        }
+
         if (scrollToBottom) {
             sc.post { sc.fullScroll(View.FOCUS_DOWN) }
         }
+        // 次の画面に持ち越さないようクリアする（各画面で毎回setQuickNextする）
+        quickNextAction = null
     }
 
     private fun panel(): LinearLayout {
@@ -2259,6 +2323,12 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(14)))
+        setQuickNext("話し合いへ") {
+            currentTalks.addAll(freeTalksToday)
+            currentTalks.addAll(engine.discussionTalks())
+            talkReveal = if (optOnebyone) 1 else currentTalks.size
+            showDay()
+        }
         cd.addView(btn("疑いの話し合いへ", Color.parseColor("#D8703D")) {
             currentTalks.addAll(freeTalksToday)
             currentTalks.addAll(engine.discussionTalks())
@@ -2418,13 +2488,15 @@ class MainActivity : Activity() {
         outer.addView(tv("📋 ${e.dayCount}日目のまとめ", 19f, true, Color.parseColor("#FFE28A")))
         outer.addView(space(dp(8)))
         outer.addView(tv("🐺付きの矢印 = 疑っている相手", 12f, false, Color.parseColor("#BFD0FF")))
+        outer.addView(tv("狼の絵 = 人狼だと判明している人（†は脱落済み）", 12f, false,
+            Color.parseColor("#FFC9C9")))
         outer.addView(space(dp(6)))
 
         // 相関図（疑いの矢印のみ描画）
         val suspectTalks = talks.filter { it.suspect }
         val dm = resources.displayMetrics
         val side = (dm.widthPixels * 0.82f).toInt()
-        outer.addView(SummaryView(this, e, suspectTalks, humanMode),
+        outer.addView(SummaryView(this, e, suspectTalks, humanMode, moodVictory != 0),
             LinearLayout.LayoutParams(side, side))
         outer.addView(space(dp(10)))
 
@@ -2662,6 +2734,7 @@ class MainActivity : Activity() {
         return btn("$label: " + if (on) "する" else "しない",
             Color.parseColor(if (on) onColor else "#6B7280")) {
             sp.edit().putBoolean(key, !on).apply()
+            if (key == "opt_quicknext") optQuickNext = !on
             showOptions()
         }
     }
@@ -2719,6 +2792,10 @@ class MainActivity : Activity() {
         cd.addView(space(dp(6)))
         cd.addView(toggleBtn(sp, "opt_onebyone", "⑤ 会話を1人ずつ送りで進める", false, "#FFD08A"))
         cd.addView(tv("全員の会話をまとめて出さず、番号順に1人ずつ「次へ」で送ります。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(6)))
+        cd.addView(toggleBtn(sp, "opt_quicknext", "⑥ 右下に「次へ」ボタンを固定", true, "#D8703D"))
+        cd.addView(tv("画面のどこにいても押せる小さな次へボタンを右下に常時表示します（画面ごとにボタン位置を探さずに済みます）。",
+            11f, false, Color.parseColor("#BFD0FF")))
         cd.addView(space(dp(14)))
 
         cd.addView(btn("タイトルへ", Color.parseColor("#D8703D")) { showTitle() })
@@ -3451,6 +3528,7 @@ class MainActivity : Activity() {
         optAnalysis = sp.getBoolean("opt_analysis", false)
         optWinrate = sp.getBoolean("opt_winrate", false)
         optOnebyone = sp.getBoolean("opt_onebyone", false)
+        optQuickNext = sp.getBoolean("opt_quicknext", true)
         humanMode = sp.getBoolean("human_mode", false)
         // 各キャラの好感度（遊んだ回数・勝利貢献・プレゼント）をエンジンへ注入
         for (i in Animal.values().indices) {
@@ -3523,6 +3601,12 @@ class MainActivity : Activity() {
             }
         }
         cd.addView(space(dp(16)))
+        setQuickNext("昼へ") {
+            currentTalks = ArrayList()
+            introTalks = ArrayList(engine.buildIntroTalks())
+            introReveal = 1
+            showIntro()
+        }
         cd.addView(btn("1日目の昼へ", Color.parseColor("#D8703D")) {
             currentTalks = ArrayList()
             introTalks = ArrayList(engine.buildIntroTalks())
@@ -3699,6 +3783,7 @@ class MainActivity : Activity() {
         cd.addView(space(dp(16)))
         val w = e.winner()
         if (w != 0) {
+            setQuickNext("結果へ") { showGameOver(w) }
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
         } else if (v != null && v.id == e.humanId) {
             // あなたが襲撃された → やられた画面へ
@@ -3745,6 +3830,10 @@ class MainActivity : Activity() {
         }
 
         if (shown < introTalks.size) {
+            setQuickNext("次の人") {
+                introReveal = (introReveal + 1).coerceAtMost(introTalks.size)
+                showIntro()
+            }
             cd.addView(btn("次の人の自己紹介をきく ▶", Color.parseColor("#3D6BD8")) {
                 introReveal = (introReveal + 1).coerceAtMost(introTalks.size)
                 showIntro()
@@ -3769,6 +3858,7 @@ class MainActivity : Activity() {
         cd.addView(tv("💡 人狼は「言った人」の中に1人、「言わなかった人」の中に1人ひそんでいます。",
             13f, true, Color.parseColor("#FF9B9B")))
         cd.addView(space(dp(14)))
+        setQuickNext("話し合いへ") { startFreeTalk() }
         cd.addView(btn("話し合いへ", Color.parseColor("#D8703D")) { startFreeTalk() })
         pn.addView(cd)
         setScreen(pn)
@@ -3839,6 +3929,7 @@ class MainActivity : Activity() {
         }
 
         cd.addView(space(dp(14)))
+        setQuickNext("自由会話へ") { startFreeTalk() }
         cd.addView(btn("自由会話へ") { startFreeTalk() })
         pn.addView(cd)
         setScreen(pn)
@@ -3943,6 +4034,10 @@ class MainActivity : Activity() {
         }
         // ⑤ 1人ずつ送り：まだ残りがあれば「次へ」ボタン
         if (optOnebyone && shown < currentTalks.size) {
+            setQuickNext("次の人") {
+                talkReveal = (talkReveal + 1).coerceAtMost(currentTalks.size)
+                showDay()
+            }
             cd.addView(btn("次の人の話をきく ▶", Color.parseColor("#3D6BD8")) {
                 talkReveal = (talkReveal + 1).coerceAtMost(currentTalks.size)
                 showDay()
@@ -3964,7 +4059,7 @@ class MainActivity : Activity() {
             val suspectTalks = currentTalks.filter { it.suspect }
             val dm2 = resources.displayMetrics
             val side = (dm2.widthPixels * 0.8f).toInt()
-            cd.addView(SummaryView(this, e, suspectTalks, humanMode),
+            cd.addView(SummaryView(this, e, suspectTalks, humanMode, moodVictory != 0),
                 LinearLayout.LayoutParams(side, side).also { it.gravity = Gravity.CENTER_HORIZONTAL })
             cd.addView(space(dp(8)))
         }
@@ -3996,10 +4091,17 @@ class MainActivity : Activity() {
             cd.addView(tv("🌙 1日目は手がかりがないので、今夜は投票（処刑）を行いません。", 13f, true,
                 Color.parseColor("#BFD0FF")))
             cd.addView(space(dp(8)))
+            setQuickNext("夜へ") { beginNight() }
+            setQuickNext("夜へ") { beginNight() }
             cd.addView(btn("夜になる", Color.parseColor("#5A4FD8")) { beginNight() })
         } else if (h.alive) {
+            setQuickNext("投票へ") { showVote() }
             cd.addView(btn("投票へ進む", Color.parseColor("#D8703D")) { showVote() })
         } else {
+            setQuickNext("開票へ") {
+                val ex = e.runVote(null)
+                showExecution(ex)
+            }
             cd.addView(btn("開票へ（観戦）") {
                 val ex = e.runVote(null)
                 showExecution(ex)
@@ -4051,6 +4153,7 @@ class MainActivity : Activity() {
         cd.addView(space(dp(16)))
         val w = e.winner()
         if (w != 0) {
+            setQuickNext("結果へ") { showGameOver(w) }
             cd.addView(btn("結果を見る", Color.parseColor("#D8703D")) { showGameOver(w) })
         } else if (ex.id == e.humanId) {
             cd.addView(btn("次へ", Color.parseColor("#5A4FD8")) {
