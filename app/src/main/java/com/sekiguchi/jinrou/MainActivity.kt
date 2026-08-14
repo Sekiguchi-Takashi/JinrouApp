@@ -86,6 +86,8 @@ class GameEngine {
     // 公開情報
     val publishedSeer = HashSet<Int>()
     val publicBlack = HashSet<Int>()
+    // 霊能結果などで「人狼だった」と公に判明した死亡者（まとめ画面の狼マーク用）
+    val revealedWolfDead = HashSet<Int>()
     val publicWhite = HashSet<Int>()
 
     // 占い師フェーズ（2日目の朝から）
@@ -423,8 +425,10 @@ class GameEngine {
             val resText = if (res) "人狼だった！" else "人狼ではなかった"
             if (medium.id == humanId) {
                 humanMediumResults[exd.id] = res
+                if (res) revealedWolfDead.add(exd.id)
                 humanMediumNew = "霊能結果：昨日処刑された ${exd.pname} は $resText"
             } else {
+                if (res) revealedWolfDead.add(exd.id)   // 公開の場で人狼と判明
                 morningLog.add("${medium.pname}「霊能結果：昨日処刑された ${exd.pname} は $resText」")
                 // あなたが人狼だと主張した相手が、公開の場でシロと判明 → 信用を失う
                 if (!res && humanTrust && humanClaims.contains(exd.id)) {
@@ -476,15 +480,18 @@ class GameEngine {
 
     // あなたの視点で「人狼だと確定している」キャラか？
     // （自分が人狼なら仲間、自分の占い結果で黒、霊能で人狼と判明、ゲーム終了後は全員）
+    // あなたの視点で「人狼だと確定して“公然と”分かっている」キャラか？
+    // マークは推理の答えを見せてしまうため、条件を厳しくする：
+    //   ・決着後は全員公開
+    //   ・処刑/襲撃で死亡し、霊能結果や答え合わせで人狼と判明した者
+    //   ・あなた自身が占って人狼と出た者（自分だけが知る情報なので表示する）
+    // 生存中の仲間（あなたが人狼のとき）は、役職確認画面で分かるためマークは付けない。
     fun isWolfConfirmed(p: Player, revealAll: Boolean): Boolean {
         if (revealAll) return p.role.isWolf
-        val me = players.getOrNull(humanId) ?: return false
-        // 人狼は仲間を知っている
-        if (me.role.isWolf && p.role.isWolf) return true
-        // 自分が占った結果
+        // 霊能結果で「人狼だった」と判明した死亡者
+        if (revealedWolfDead.contains(p.id)) return true
+        // あなた自身の占いで黒と出た相手（自分だけが知る情報）
         if (humanSeerResults[p.id] == true) return true
-        // 自分が霊能で確認した結果
-        if (humanMediumResults[p.id] == true) return true
         return false
     }
 
