@@ -48,7 +48,3 @@ jobs:
             printf "sha256 %s %s\n" "$(basename "$o")" "$sha" >> out/NOTES.txt
           done
           ls -la out/
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: out/*.apk
-          body_path: out/NOTES.txt
