@@ -1841,63 +1841,108 @@ class SecretEngine {
 
     companion object { const val N = 9 }
 
-    val wolfHouses = LinkedHashSet<Int>()   // 人狼が住む家（0-8）
+    val wolfHouses = LinkedHashSet<Int>()   // 人狼が今いる家（毎晩移動する）
     var playerHouse = -1                    // あなたの家
     val gone = LinkedHashSet<Int>()         // 住人がいなくなった家（襲撃された）
-    val checked = LinkedHashSet<Int>()      // 調べ終えた家
-    val foundWolves = LinkedHashSet<Int>()  // 人狼だと突き止めた家
+    val checked = LinkedHashSet<Int>()      // 今夜すでに調べた家
+    var foundCount = 0                      // 人狼を追い詰めた回数
     var day = 1
     var searchesLeft = 1                    // 1日に調べられる回数
     var lastMessage = ""
+    val wills = ArrayList<String>()         // 犠牲者が遺したヒント（遺書）
 
     fun setup() {
-        wolfHouses.clear(); gone.clear(); checked.clear(); foundWolves.clear()
-        day = 1; searchesLeft = 1; lastMessage = ""
+        wolfHouses.clear(); gone.clear(); checked.clear(); wills.clear()
+        day = 1; searchesLeft = 1; lastMessage = ""; foundCount = 0
         val ids = (0 until N).shuffled()
         playerHouse = ids[0]
-        // 人狼はあなた以外の家から2軒
         val rest = ids.drop(1)
         wolfHouses.add(rest[0]); wolfHouses.add(rest[1])
     }
 
-    fun aliveHouses(): List<Int> = (0 until N).filter { !gone.contains(it) && !foundWolves.contains(it) }
+    // 人狼が隠れられる家＝空き家（襲撃済み）またはまだ生きている家（あなたの家以外）
+    fun hideableHouses(): List<Int> = (0 until N).filter { it != playerHouse }
 
-    // 家を調べる。trueなら人狼の家だった
+    fun aliveHouses(): List<Int> = (0 until N).filter { !gone.contains(it) }
+
+    // 家を調べる。trueなら人狼がいた
     fun search(house: Int): Boolean {
         checked.add(house)
         searchesLeft--
-        val hit = wolfHouses.contains(house) && !foundWolves.contains(house)
+        val hit = wolfHouses.contains(house)
         if (hit) {
-            foundWolves.add(house)
-            lastMessage = "この家はもぬけの殻だった…人狼の家を突き止めた！"
+            foundCount++
+            wolfHouses.remove(house)
+            lastMessage = "もぬけの殻だ…！ここに人狼がひそんでいた。追い詰めた！"
+        } else if (gone.contains(house)) {
+            lastMessage = "空き家だった。人狼の気配はない。"
         } else {
             lastMessage = "住人は眠っていた。人狼ではないようだ。"
         }
         return hit
     }
 
-    // 夜が明ける：人狼が1人を襲う（あなたと人狼以外から）
+    // 夜が明ける：犠牲者が1人出て遺書を残し、人狼は別の家へ移動する
     fun advanceDay(): Int {
         day++
         searchesLeft = 1
         checked.clear()
+
+        // 犠牲者（あなたと人狼の家以外の生存者から）
         val victims = (0 until N).filter {
             it != playerHouse && !wolfHouses.contains(it) && !gone.contains(it)
         }
-        if (victims.isEmpty()) return -1
-        val v = victims.random()
-        gone.add(v)
-        return v
+        var victim = -1
+        if (victims.isNotEmpty()) {
+            victim = victims.random()
+            gone.add(victim)
+        }
+
+        // 人狼は毎晩、別の家に移動する（既存の家か、空き家に隠れる）
+        val newSpots = LinkedHashSet<Int>()
+        for (w in wolfHouses) {
+            val cands = hideableHouses().filter { !newSpots.contains(it) }
+            newSpots.add(if (cands.isNotEmpty()) cands.random() else w)
+        }
+        wolfHouses.clear(); wolfHouses.addAll(newSpots)
+
+        // 犠牲者の遺書（残り人数に応じて核心に迫るヒントを出す）
+        if (victim >= 0) wills.add(buildWill(victim))
+        return victim
     }
 
-    // 0=続行 1=あなたの勝ち（人狼2軒を突き止めた） 2=あなたの負け（村人が尽きた）
-    fun winner(): Int {
-        if (foundWolves.size >= 2) return 1
-        val villagers = (0 until N).filter {
-            !wolfHouses.contains(it) && !gone.contains(it)
+    // 遺書のヒント：残りが少ないほど核心に迫る
+    private fun buildWill(victim: Int): String {
+        val remain = aliveHouses().size
+        val w = wolfHouses.toList()
+        if (w.isEmpty()) return "${victim + 1}番の家の住人「…もう、大丈夫みたいだ」"
+        val target = w.random()
+        val hint = when {
+            // 残りが少ない＝かなり具体的
+            remain <= 4 -> {
+                if (target % 3 == 0) "やつは左の列にいる"
+                else if (target % 3 == 1) "やつは真ん中の列にいる"
+                else "やつは右の列にいる"
+            }
+            remain <= 6 -> {
+                if (target < 3) "やつは上のほうの家にひそんでいる"
+                else if (target < 6) "やつは真ん中あたりの家にひそんでいる"
+                else "やつは下のほうの家にひそんでいる"
+            }
+            else -> {
+                if (gone.contains(target)) "やつは……空き家に隠れているかもしれない"
+                else "やつは……まだ人の住む家にまぎれている"
+            }
         }
-        // あなた以外の村人がいなくなったら人狼の勝ち
-        if (villagers.size <= 1) return 2
+        val extra = if (remain <= 3) "　${target + 1}番の家をよく見ろ…" else ""
+        return "📜 ${victim + 1}番の家の遺書：「$hint$extra」"
+    }
+
+    // 0=続行 1=あなたの勝ち 2=あなたの負け
+    fun winner(): Int {
+        if (foundCount >= 2) return 1
+        val villagers = (0 until N).filter { !gone.contains(it) && it != playerHouse }
+        if (villagers.isEmpty()) return 2
         return 0
     }
 }
@@ -2053,11 +2098,59 @@ class MainActivity : Activity() {
             root.addView(fab, flp)
         }
 
+        // 左上に小さく「終了」ボタン（ゲーム中のみ。誤タップ防止のため確認あり）
+        if (showExitButton) {
+            val ex = Button(this)
+            ex.text = "✕ 終了"
+            ex.textSize = 12f
+            ex.setTextColor(Color.WHITE)
+            ex.isAllCaps = false
+            ex.setPadding(dp(12), dp(5), dp(12), dp(5))
+            ex.background = GradientDrawable().apply {
+                cornerRadius = dp(18).toFloat()
+                setColor(Color.argb(190, 60, 66, 92))
+                setStroke(dp(1), Color.argb(150, 255, 255, 255))
+            }
+            ex.elevation = dp(6).toFloat()
+            ex.setOnClickListener { confirmExitToTitle() }
+            val elp = FrameLayout.LayoutParams(-2, -2)
+            elp.gravity = Gravity.TOP or Gravity.START
+            elp.setMargins(dp(12), dp(12), 0, 0)
+            root.addView(ex, elp)
+        }
+
         if (scrollToBottom) {
             sc.post { sc.fullScroll(View.FOCUS_DOWN) }
         }
         // 次の画面に持ち越さないようクリアする（各画面で毎回setQuickNextする）
         quickNextAction = null
+    }
+
+    // 終了ボタンを出すか（ゲーム中のみtrue。タイトルや図鑑では出さない）
+    private var showExitButton = false
+
+    private fun confirmExitToTitle() {
+        val d = android.app.Dialog(this)
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        val outer = card()
+        outer.addView(tv("ゲームを終了しますか？", 17f, true, Color.parseColor("#FFE28A")))
+        outer.addView(space(dp(6)))
+        outer.addView(tv("いま進めているゲームは記録されず、タイトルに戻ります。",
+            12f, false, Color.parseColor("#BFD0FF")))
+        outer.addView(space(dp(14)))
+        outer.addView(btn("終了してタイトルへ", Color.parseColor("#D8703D")) {
+            d.dismiss()
+            night = false
+            showExitButton = false
+            showTitle()
+        })
+        outer.addView(space(dp(8)))
+        outer.addView(btn("つづける") { d.dismiss() })
+        val dm = resources.displayMetrics
+        d.setContentView(outer)
+        d.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+        d.window?.setLayout((dm.widthPixels * 0.84f).toInt(), -2)
+        d.show()
     }
 
     private fun panel(): LinearLayout {
@@ -2883,6 +2976,7 @@ class MainActivity : Activity() {
     private var secret = SecretEngine()
 
     private fun startSecret() {
+        showExitButton = true
         secret = SecretEngine()
         secret.setup()
         night = true
@@ -2899,15 +2993,27 @@ class MainActivity : Activity() {
         cd.addView(space(dp(8)))
 
         // 状況表示
-        val statusRow = tv("${s.day}日目　🔍 調べられる回数: ${s.searchesLeft}　🐺 発見: ${s.foundWolves.size}/2",
+        val statusRow = tv("${s.day}日目　🔍 調べられる回数: ${s.searchesLeft}　🐺 追い詰めた: ${s.foundCount}/2",
             14f, true, Color.parseColor("#FFE28A"))
         statusRow.gravity = Gravity.CENTER
         cd.addView(statusRow)
-        val remain = (0 until SecretEngine.N).count { !s.gone.contains(it) && !s.foundWolves.contains(it) }
-        val sub = tv("のこっている家: $remain 軒", 12f, false, Color.parseColor("#BFD0FF"))
+        val remain = s.aliveHouses().size
+        val sub = tv("住人ののこる家: $remain 軒　（人狼は毎晩ちがう家に隠れる）",
+            12f, false, Color.parseColor("#BFD0FF"))
         sub.gravity = Gravity.CENTER
         cd.addView(sub)
         cd.addView(space(dp(10)))
+
+        // 犠牲者が遺したヒント（遺書）
+        if (s.wills.isNotEmpty()) {
+            val wbox = card()
+            wbox.addView(tv("📜 遺書", 14f, true, Color.parseColor("#FFD08A")))
+            for (wl in s.wills.takeLast(3)) {
+                wbox.addView(tv(wl, 12f, false, Color.parseColor("#FFE0B0")))
+            }
+            cd.addView(wbox)
+            cd.addView(space(dp(8)))
+        }
 
         if (s.lastMessage.isNotEmpty()) {
             val msg = tv(s.lastMessage, 14f, true,
@@ -2936,11 +3042,11 @@ class MainActivity : Activity() {
 
                 val hv = HouseView(this, night)
                 hv.isPlayerHouse = (id == s.playerHouse)
-                hv.isEmpty = s.foundWolves.contains(id)
-                hv.isCleared = s.checked.contains(id) && !s.foundWolves.contains(id)
+                hv.isEmpty = false
+                hv.isCleared = s.checked.contains(id)
                 hv.isGone = s.gone.contains(id)
-                val selectable = id != s.playerHouse && !s.checked.contains(id) &&
-                    !s.foundWolves.contains(id) && !s.gone.contains(id) && s.searchesLeft > 0
+                // 空き家にも人狼が隠れるので、脱落した家も調べられる
+                val selectable = id != s.playerHouse && !s.checked.contains(id) && s.searchesLeft > 0
                 if (selectable) {
                     holder.setOnClickListener { doSecretSearch(id) }
                 }
@@ -2948,16 +3054,14 @@ class MainActivity : Activity() {
 
                 val label = when {
                     id == s.playerHouse -> "あなたの家"
-                    s.foundWolves.contains(id) -> "🐺 人狼！"
-                    s.gone.contains(id) -> "† 空き家"
-                    s.checked.contains(id) -> "✔ 調査済"
+                    s.checked.contains(id) -> "✔ 今夜は調査済"
+                    s.gone.contains(id) -> "† ${id + 1}番（空き家）"
                     else -> "${id + 1}番の家"
                 }
                 val col2 = when {
                     id == s.playerHouse -> Color.parseColor("#FF6B60")
-                    s.foundWolves.contains(id) -> Color.parseColor("#FF9B9B")
-                    s.gone.contains(id) -> Color.parseColor("#9AA0B5")
                     s.checked.contains(id) -> Color.parseColor("#A8E6A1")
+                    s.gone.contains(id) -> Color.parseColor("#9AA0B5")
                     else -> Color.WHITE
                 }
                 val lt = tv(label, 11f, true, col2)
@@ -2982,7 +3086,8 @@ class MainActivity : Activity() {
             cd.addView(res)
             cd.addView(space(dp(6)))
             val ans = s.wolfHouses.joinToString("、") { "${it + 1}番" }
-            cd.addView(tv("人狼の家は $ans でした。", 13f, false, Color.parseColor("#BFD0FF")))
+            if (ans.isNotEmpty())
+                cd.addView(tv("逃げ延びた人狼は $ans にひそんでいました。", 13f, false, Color.parseColor("#BFD0FF")))
             cd.addView(space(dp(12)))
             setQuickNext("もう一度") { startSecret() }
             cd.addView(btn("もう一度あそぶ", Color.parseColor("#D8703D")) { startSecret() })
@@ -2999,12 +3104,10 @@ class MainActivity : Activity() {
             cd.addView(space(dp(8)))
             setQuickNext("おまかせ") {
                 val cands = (0 until SecretEngine.N).filter {
-                    it != s.playerHouse && !s.checked.contains(it) &&
-                        !s.foundWolves.contains(it) && !s.gone.contains(it)
+                    it != s.playerHouse && !s.checked.contains(it)
                 }
                 if (cands.isNotEmpty()) doSecretSearch(cands.random())
             }
-            cd.addView(btn("タイトルへ") { night = false; showTitle() })
         }
 
         pn.addView(cd)
@@ -3024,6 +3127,7 @@ class MainActivity : Activity() {
     }
 
     private fun showTitle() {
+        showExitButton = false
         night = false
         val pn = panel()
         pn.gravity = Gravity.CENTER_HORIZONTAL
@@ -3901,6 +4005,7 @@ class MainActivity : Activity() {
     // ---------- ゲーム開始 / 役職確認 ----------
 
     private fun startGame() {
+        showExitButton = true
         val sp = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
         engine = GameEngine()
         // setup()の前にルールを注入する（役職構成・恋人・名前に影響するため）
