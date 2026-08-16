@@ -1530,6 +1530,14 @@ class SummaryView(context: Context, private val engine: GameEngine,
         tp.textSize = w * 0.042f
         for (pl in av) {
             val q = pos[pl.id] ?: continue
+            // あなた自身は赤い太線の丸で囲む
+            if (pl.id == engine.humanId) {
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = charSize * 0.10f
+                p.color = Color.parseColor("#FF3B30")
+                c.drawCircle(q[0], q[1], charSize * 0.62f, p)
+                p.style = Paint.Style.FILL
+            }
             val bmp = if (humanMode) humanBmp(pl.animal.ordinal) else null
             if (bmp != null) {
                 val half = charSize * 0.6f
@@ -1989,6 +1997,22 @@ class MainActivity : Activity() {
         // キャラ画像の上に旗/疑いマークを重ねる
         val stack = FrameLayout(this)
         stack.clipChildren = false   // 跳ねるアニメで頭が切れないように
+
+        // あなた自身は赤い太線の丸で囲んで、ひと目で分かるようにする
+        val isYouCell = engine.humanId >= 0 && pl.id == engine.humanId
+        if (isYouCell) {
+            val ring = View(this)
+            ring.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(4), Color.parseColor("#FF3B30"))
+            }
+            val rsz = (sizeDp * 1.06f).toInt()
+            val rlp = FrameLayout.LayoutParams(dp(rsz), dp(rsz))
+            rlp.gravity = Gravity.CENTER
+            stack.addView(ring, rlp)
+        }
+
         val cv = charView(pl.animal, pl.alive)
         cv.emotion = emotionOf(pl)
         stack.addView(cv, FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp)))
@@ -2034,8 +2058,8 @@ class MainActivity : Activity() {
             if (pl.alive) Color.WHITE else Color.parseColor("#9AA0B5"))
         name.gravity = Gravity.CENTER
         cell.addView(name)
-        if (engine.humanId >= 0 && pl.id == engine.humanId) {
-            val you = tv("YOU", 10f, true, Color.parseColor("#FFD97A"))
+        if (isYouCell) {
+            val you = tv("● YOU", 11f, true, Color.parseColor("#FF6B60"))
             you.gravity = Gravity.CENTER
             cell.addView(you)
         }
@@ -2093,7 +2117,8 @@ class MainActivity : Activity() {
             val cell = charCell(pl, sizeDp, null)
             if (onClick != null && enabled.contains(pl.id)) {
                 cell.setOnClickListener { onClick(pl) }
-            } else if (onClick != null) {
+            } else if (onClick != null && !pl.alive) {
+                // 薄くするのは脱落者だけ。生きているキャラは選べなくてもはっきり表示する
                 cell.alpha = 0.35f
             }
             val lp = LinearLayout.LayoutParams(-2, -2)
@@ -2231,7 +2256,7 @@ class MainActivity : Activity() {
                     else if (predictedWolves.size < 2) predictedWolves.add(pl.id)
                     showWolfPredict(onContinue)
                 }
-            } else {
+            } else if (!pl.alive) {
                 cell.alpha = 0.35f
             }
             val lp = LinearLayout.LayoutParams(-2, -2)
@@ -2463,9 +2488,21 @@ class MainActivity : Activity() {
         }
         // 番号や確定人狼マークを重ねる必要があるときはFrameLayoutで包む
         val confirmed = engine.isWolfConfirmed(sp, moodVictory != 0)
-        if (optNumbering || confirmed) {
+        if (optNumbering || confirmed || isYou) {
             val stack = FrameLayout(this)
             stack.clipChildren = false   // 跳ねるアニメで頭が切れないように
+            // あなた自身の発言は赤い丸で囲む
+            if (isYou) {
+                val ring = View(this)
+                ring.background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.TRANSPARENT)
+                    setStroke(dp(3), Color.parseColor("#FF3B30"))
+                }
+                val rlp = FrameLayout.LayoutParams(dp(55), dp(55))
+                rlp.gravity = Gravity.CENTER
+                stack.addView(ring, rlp)
+            }
             stack.addView(cvv, FrameLayout.LayoutParams(dp(52), dp(52)))
             if (optNumbering) {
                 val num = "①②③④⑤⑥⑦⑧⑨".getOrNull(sp.animal.ordinal)?.toString() ?: ""
