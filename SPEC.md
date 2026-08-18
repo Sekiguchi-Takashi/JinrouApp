@@ -1,4 +1,4 @@
-# どうぶつ人狼（JinrouApp）仕様書 — v34 / versionCode 29 時点
+# どうぶつ人狼（JinrouApp）仕様書 — v35 / versionCode 29 時点
 
 別のチャットで開発を再開するときの引き継ぎ資料。
 **このSPEC.md と `app/src/main/java/com/sekiguchi/jinrou/MainActivity.kt` の全文を渡せば、同じ精度で続きができます。**
@@ -7,20 +7,28 @@
 ---
 
 
-## デプロイ（恒久ルール）
+## デプロイ・納品規約（恒久ルール）
 
-更新の受け渡しは同梱の `deploy.sh` に集約する。push とタグ発行までを1コマンドで完結する。
+更新の受け渡しは同梱の `deploy.sh` に集約する。
 
 ```
-bash deploy.sh "コミットメッセージ"
+bash deploy.sh "コミットメッセージ"          # push + タグ発行
+bash deploy.sh "コミットメッセージ" notag    # pushのみ（タグを打たない）
 ```
 
-- `git pull --rebase origin main` を必ず含む。カタログ管理システムが API 経由で
-  `.github/workflows/release.yml` と `ci/appathy.keystore` を直接コミットしているため、
-  これが無いと push が rejected になる。
-- 上記2ファイルと `ci/` ディレクトリは配布ビルドに必要なため削除しない。
-- 最新リリースのタグを取得して次のタグを自動採番し、`refs/tags` に発行する。
-  タグを打つと Actions がビルドして Release を作り、自作アプリストアに更新として現れる。
+1. deploy.sh は「push → pull --rebase → タグ発行」まで行う。次タグは
+   `git tag --list 'v*' | sort -V` の最大値から算出し、`git tag` / `git push origin タグ名`
+   でローカル発行する（GitHub APIのheads参照は反映遅延で一つ前のコミットに付くため禁止）。
+   第2引数 `notag` で push のみ。
+2. build.yml は作らない。CIは release.yml（タグ起動）のみ。
+   `actions/upload-artifact` は使わない（Artifacts枠0.5GBが枯渇し全ビルドが落ちる）。
+3. `ci/` ディレクトリと `.github/workflows/release.yml` は配布ビルドに必要。
+   削除・追跡解除しない（納品ZIPにも含めないので端末側のものが温存される）。
+4. ファイルを削除する納品では deploy.sh に `rm -f 対象パス` を足す
+   （`unzip -o` は端末の旧ファイルを消さないため）。
+5. 納品はバージョン番号付きZIP＋同メッセージに実行4行ブロック。冒頭に【本番】か【テスト】を明示。
+   シェルは echo 禁止・対話入力禁止・トークンをチャットに貼らせない。
+
 - GHUSER=Sekiguchi-Takashi / REPO=JinrouApp
 
 ## 0. 開発環境と更新フロー（必ず守る規約）
