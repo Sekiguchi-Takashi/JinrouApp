@@ -2030,6 +2030,38 @@ class SecretEngine {
         return victim
     }
 
+    // 続きのシナリオ用の証言。遺書とは別の切り口（安全な家を教える／隣接の気配）で手がかりを出す
+    fun buildTestimony(house: Int): List<String> {
+        val out = ArrayList<String>()
+        val w = wolfHouses.toList()
+        if (w.isEmpty()) {
+            out.add("もう物音はしない…終わったのかもしれない")
+            return out
+        }
+        val target = w.random()
+        // 1. 安全な家をひとつ教える（人狼がいない家）
+        val safe = (0 until N).filter {
+            it != house && it != playerHouse && !wolfHouses.contains(it) && !ruined.contains(it)
+        }
+        if (safe.isNotEmpty()) {
+            out.add("${safe.random() + 1}番の家からは、いつもどおりの寝息が聞こえていたよ")
+        }
+        // 2. 人狼の家との位置関係（行・列の差）でヒント
+        val hr = house / 3; val hc = house % 3
+        val tr = target / 3; val tc = target % 3
+        out.add(when {
+            tr < hr -> "夜中、物音は上のほうから聞こえた気がする"
+            tr > hr -> "夜中、物音は下のほうから聞こえた気がする"
+            tc < hc -> "物音は…すまない、左のほうだったと思う"
+            tc > hc -> "物音は右のほうから聞こえた"
+            else -> "すぐ近くで、何かが動く音がした"
+        })
+        // 3. 隠れ場所の種類
+        out.add(if (gone.contains(target)) "空き家のほうから、明かりもないのに気配がした"
+                else "人が住んでいる家に、よそ者がまぎれている気がする")
+        return out
+    }
+
     // 遺書のヒント：残りが少ないほど核心に迫る
     private fun buildWill(victim: Int): String {
         val remain = aliveHouses().size
@@ -3273,10 +3305,51 @@ class MainActivity : Activity() {
         }
         if (hit) {
             showSecret()          // 人狼を捕まえた → 画面で確認してもらう
-        } else {
-            // 空振りなら自動で夜が明ける（朝ボタンを押す手間をなくす）
-            nextSecretDay()
+            return
         }
+        // 人狼ではなかった場合
+        val story = getSharedPreferences("jinrou", Context.MODE_PRIVATE)
+            .getBoolean("opt_secret_story", true)
+        if (story) {
+            showSecretStory(house)   // 続きのシナリオ（住人との場面）へ
+        } else {
+            nextSecretDay()          // すぐ夜が明ける
+        }
+    }
+
+    // 続きのシナリオ：人狼ではなかった家の住人が手がかりを語る
+    private fun showSecretStory(house: Int) {
+        val s = secret
+        val pn = panel()
+        val cd = card()
+        cd.addView(tv("🚪 ${house + 1}番の家", 20f, true, Color.parseColor("#FFE28A")))
+        cd.addView(space(dp(8)))
+
+        val empty = s.gone.contains(house)
+        val head = if (empty) "誰もいない。もう住人はいないのだ…"
+                   else "扉を叩くと、住人が眠そうに顔を出した。"
+        cd.addView(tv(head, 14f, false, Color.WHITE))
+        cd.addView(space(dp(10)))
+
+        // 住人の証言（残り家数と人狼の位置から手がかりを組み立てる）
+        val lines = s.buildTestimony(house)
+        val box = card()
+        box.addView(tv(if (empty) "🕯️ 家に残されたもの" else "💬 住人の証言",
+            14f, true, Color.parseColor("#A8D8FF")))
+        for (l in lines) {
+            box.addView(tv("「$l」", 13f, false, Color.parseColor("#DCE4FF")))
+            box.addView(space(dp(4)))
+        }
+        cd.addView(box)
+        cd.addView(space(dp(12)))
+
+        cd.addView(tv("この家に人狼はいなかった。夜が明ける…", 13f, true,
+            Color.parseColor("#C8F0C2")))
+        cd.addView(space(dp(12)))
+        setQuickNext("朝へ") { nextSecretDay() }
+        cd.addView(btn("☀️ 夜明けを迎える", Color.parseColor("#D8703D")) { nextSecretDay() })
+        pn.addView(cd)
+        setScreen(pn)
     }
 
     private fun nextSecretDay() {
@@ -3417,8 +3490,11 @@ class MainActivity : Activity() {
         pn.addView(btn("はじめる", Color.parseColor("#D8703D")) { startGame() },
             LinearLayout.LayoutParams(-1, -2))
         pn.addView(space(dp(10)))
-        pn.addView(btn("🌙 シークレットモード", Color.parseColor("#5A4FD8")) { startSecret() },
-            LinearLayout.LayoutParams(-1, -2))
+        if (sp.getBoolean("opt_secret", false)) {
+            pn.addView(btn("🌙 シークレットモード", Color.parseColor("#5A4FD8")) { startSecret() },
+                LinearLayout.LayoutParams(-1, -2))
+            pn.addView(space(dp(10)))
+        }
         pn.addView(space(dp(10)))
         pn.addView(btn("⚙️ オプション", Color.parseColor("#3D6BD8")) { showOptions() },
             LinearLayout.LayoutParams(-1, -2))
@@ -3477,6 +3553,23 @@ class MainActivity : Activity() {
         })
         cd.addView(tv(if (hm) "9人の人間キャラ（篤史・茜・敏行・真由美・杏奈・健一・慎吾・千鶴・透）で遊びます。"
                       else "9匹のどうぶつキャラで遊びます。", 11f, false, Color.parseColor("#BFD0FF")))
+        cd.addView(space(dp(12)))
+
+        // --- シークレットモード ---
+        cd.addView(tv("シークレットモード", 15f, true, Color.parseColor("#A8D8FF")))
+        val secOn = sp.getBoolean("opt_secret", false)
+        cd.addView(btn("🌙 シークレットモード: " + if (secOn) "つかう" else "つかわない",
+            Color.parseColor(if (secOn) "#5A4FD8" else "#6B7280")) {
+            sp.edit().putBoolean("opt_secret", !secOn).apply(); showOptions()
+        })
+        cd.addView(tv("9軒の家から人狼の隠れ家を探す別モード。ONにするとタイトルに表示されます。",
+            11f, false, Color.parseColor("#BFD0FF")))
+        if (secOn) {
+            cd.addView(space(dp(6)))
+            cd.addView(toggleBtn(sp, "opt_secret_story", "　└ 続きのシナリオを入れる", true, "#C9B6FF"))
+            cd.addView(tv("人狼ではなかったとき、その家の住人との場面が入り、手がかりが語られます。OFFならすぐ朝になります。",
+                11f, false, Color.parseColor("#BFD0FF")))
+        }
         cd.addView(space(dp(12)))
 
         // --- 特別ルール ---
