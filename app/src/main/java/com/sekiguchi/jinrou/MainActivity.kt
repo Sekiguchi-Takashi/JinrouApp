@@ -1770,6 +1770,8 @@ class HouseView(context: Context, private val night: Boolean) : View(context) {
     var isCleared = false          // 調べて人狼ではなかった家
     var isGone = false             // 住人が脱落した家
     var isRuined = false           // 人狼が去って壊れた家（もう誰も隠れられない）
+    var isCaught = false           // ここで人狼を追い詰めた（🐺マークを重ねる）
+    private var wolfMark: android.graphics.Bitmap? = null
 
     override fun onDraw(c: Canvas) {
         super.onDraw(c)
@@ -1847,6 +1849,87 @@ class HouseView(context: Context, private val night: Boolean) : View(context) {
         // ドア
         p.color = if (isEmpty) Color.parseColor("#1A1A1E") else Color.parseColor("#4A3626")
         c.drawRect(x + hw * 0.42f, wallTop + hh * 0.25f, x + hw * 0.58f, y + hh, p)
+
+        // 人狼を追い詰めた家には狼マークを重ねる
+        if (isCaught) {
+            if (wolfMark == null) {
+                val id = resources.getIdentifier("wolf_mark", "drawable", context.packageName)
+                if (id != 0) wolfMark = android.graphics.BitmapFactory.decodeResource(resources, id)
+            }
+            val bm = wolfMark
+            if (bm != null) {
+                val ms = w * 0.62f
+                val dst = RectF(w / 2f - ms / 2f, h / 2f - ms / 2f * 1.1f,
+                                w / 2f + ms / 2f, h / 2f + ms / 2f * 0.9f)
+                c.drawBitmap(bm, null, dst, null)
+            }
+        }
+    }
+}
+
+// =====================================================
+// クリア時のお祝いアニメーション（紙吹雪＋光の輪）
+// =====================================================
+
+class CelebrationView(context: Context) : View(context) {
+
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var phase = 0f
+    private val rnd = Random(11)
+    private val colors = listOf("#FFE28A", "#FF9B9B", "#A8E6A1", "#8FD0FF", "#E0A8FF", "#FFD450")
+    // 紙吹雪：x位置, 落下開始オフセット, 横揺れ速度, 色, 大きさ
+    private val pieces = List(46) {
+        listOf(rnd.nextFloat(), rnd.nextFloat(), 0.6f + rnd.nextFloat(),
+               rnd.nextInt(6).toFloat(), 0.5f + rnd.nextFloat())
+    }
+
+    private val frame = object : Runnable {
+        override fun run() {
+            phase += 0.012f
+            if (phase > 100f) phase = 0f
+            invalidate()
+            postOnAnimation(this)
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        postOnAnimation(frame)
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        removeCallbacks(frame)
+    }
+
+    override fun onDraw(c: Canvas) {
+        super.onDraw(c)
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+
+        // 中央から広がる光の輪
+        val ringT = (phase * 0.8f) % 1f
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = w * 0.012f
+        p.color = Color.argb((160 * (1f - ringT)).toInt().coerceIn(0, 255), 255, 226, 138)
+        c.drawCircle(w / 2f, h * 0.42f, w * 0.12f + w * 0.5f * ringT, p)
+        p.style = Paint.Style.FILL
+
+        // 紙吹雪
+        for (pc in pieces) {
+            val baseX = pc[0] * w
+            val t = (phase * pc[2] + pc[1]) % 1f
+            val y = t * h * 1.15f - h * 0.1f
+            val sway = kotlin.math.sin((t * 8f + pc[1] * 6f)) * w * 0.05f
+            val size = w * 0.018f * pc[4]
+            p.color = Color.parseColor(colors[pc[3].toInt() % colors.size])
+            c.save()
+            c.rotate((t * 540f + pc[1] * 360f), baseX + sway, y)
+            c.drawRect(baseX + sway - size, y - size * 0.6f,
+                       baseX + sway + size, y + size * 0.6f, p)
+            c.restore()
+        }
     }
 }
 
@@ -1867,6 +1950,7 @@ class SecretEngine {
     val gone = LinkedHashSet<Int>()         // 住人がいなくなった家（襲撃された）
     val checked = LinkedHashSet<Int>()      // 今夜すでに調べた家
     var foundCount = 0                      // 人狼を追い詰めた回数
+    val caughtHouses = LinkedHashSet<Int>() // 人狼を追い詰めた家（🐺マークを出す）
     var day = 1
     var searchesLeft = 1                    // 1日に調べられる回数
     var lastMessage = ""
@@ -1879,6 +1963,7 @@ class SecretEngine {
         wolfHouses.clear(); gone.clear(); checked.clear(); ruined.clear(); moves.clear()
         lastWill = ""
         day = 1; searchesLeft = 1; lastMessage = ""; foundCount = 0
+        caughtHouses.clear()
         val ids = (0 until N).shuffled()
         playerHouse = ids[0]
         val rest = ids.drop(1)
@@ -1898,6 +1983,7 @@ class SecretEngine {
         val hit = wolfHouses.contains(house)
         if (hit) {
             foundCount++
+            caughtHouses.add(house)
             wolfHouses.remove(house)
             lastMessage = "もぬけの殻だ…！ここに人狼がひそんでいた。追い詰めた！"
         } else if (gone.contains(house)) {
@@ -3026,10 +3112,18 @@ class MainActivity : Activity() {
         cd.addView(space(dp(8)))
 
         // 状況表示
-        val statusRow = tv("${s.day}日目　🔍 調べられる回数: ${s.searchesLeft}　🐺 追い詰めた: ${s.foundCount}/2",
-            14f, true, Color.parseColor("#FFE28A"))
+        val statusRow = tv("${s.day}日目", 14f, true, Color.parseColor("#FFE28A"))
         statusRow.gravity = Gravity.CENTER
         cd.addView(statusRow)
+        // 残っている人狼の数を大きく表示
+        val left = s.wolfHouses.size
+        val wolfRow = tv("🐺 のこる人狼 " + "🐺".repeat(left) + "  $left 匹",
+            17f, true, if (left <= 1) Color.parseColor("#A8E6A1") else Color.parseColor("#FF9B9B"))
+        wolfRow.gravity = Gravity.CENTER
+        cd.addView(wolfRow)
+        val caught = tv("捕らえた: ${s.foundCount} / 2", 12f, false, Color.parseColor("#BFD0FF"))
+        caught.gravity = Gravity.CENTER
+        cd.addView(caught)
         val remain = s.aliveHouses().size
         val sub = tv("住人ののこる家: $remain 軒　（人狼は毎晩ちがう家に隠れる）",
             12f, false, Color.parseColor("#BFD0FF"))
@@ -3077,6 +3171,7 @@ class MainActivity : Activity() {
                 hv.isCleared = s.checked.contains(id)
                 hv.isGone = s.gone.contains(id)
                 hv.isRuined = s.ruined.contains(id)
+                hv.isCaught = s.caughtHouses.contains(id)
                 // 空き家にも人狼が隠れるので調べられる。壊れた家はもう隠れられないので対象外
                 val selectable = id != s.playerHouse && !s.checked.contains(id) &&
                     !s.ruined.contains(id) && s.searchesLeft > 0
@@ -3087,6 +3182,7 @@ class MainActivity : Activity() {
 
                 val label = when {
                     id == s.playerHouse -> "あなたの家"
+                    s.caughtHouses.contains(id) -> "🐺 ${id + 1}番で捕獲！"
                     s.ruined.contains(id) -> "🚫 ${id + 1}番（廃屋）"
                     s.checked.contains(id) -> "✔ 今夜は調査済"
                     s.gone.contains(id) -> "† ${id + 1}番（空き家）"
@@ -3094,6 +3190,7 @@ class MainActivity : Activity() {
                 }
                 val col2 = when {
                     id == s.playerHouse -> Color.parseColor("#FF6B60")
+                    s.caughtHouses.contains(id) -> Color.parseColor("#FF9B9B")
                     s.ruined.contains(id) -> Color.parseColor("#6B7280")
                     s.checked.contains(id) -> Color.parseColor("#A8E6A1")
                     s.gone.contains(id) -> Color.parseColor("#9AA0B5")
@@ -3115,10 +3212,22 @@ class MainActivity : Activity() {
         val w = s.winner()
         if (w != 0) {
             cd.addView(space(dp(6)))
-            val res = tv(if (w == 1) "🎉 人狼2匹の家をすべて突き止めた！" else "🐺 村人が全員いなくなってしまった…",
+            if (w == 1) {
+                val big = tv("🎉 村に平和が戻った！ 🎉", 22f, true, Color.parseColor("#FFE28A"))
+                big.gravity = Gravity.CENTER
+                cd.addView(big)
+                cd.addView(space(dp(4)))
+            }
+            val res = tv(if (w == 1) "人狼2匹をすべて追い詰めた！" else "🐺 村人が全員いなくなってしまった…",
                 18f, true, if (w == 1) Color.parseColor("#A8E6A1") else Color.parseColor("#FF9B9B"))
             res.gravity = Gravity.CENTER
             cd.addView(res)
+            if (w == 1) {
+                cd.addView(space(dp(6)))
+                val stat = tv("${s.day}日目でクリア！", 15f, true, Color.parseColor("#FFD450"))
+                stat.gravity = Gravity.CENTER
+                cd.addView(stat)
+            }
             cd.addView(space(dp(6)))
             val ans = s.wolfHouses.joinToString("、") { "${it + 1}番" }
             if (ans.isNotEmpty())
@@ -3132,7 +3241,7 @@ class MainActivity : Activity() {
             setQuickNext("朝へ") { nextSecretDay() }
             cd.addView(btn("☀️ 朝を迎える", Color.parseColor("#5A4FD8")) { nextSecretDay() })
             cd.addView(space(dp(8)))
-            cd.addView(tv("今夜はもう調べられません。朝になると人狼が誰かを襲います。",
+            cd.addView(tv("のこる人狼は ${s.wolfHouses.size} 匹。朝になると人狼はまた隠れ家を変えます。",
                 12f, false, Color.parseColor("#BFD0FF")))
         } else {
             cd.addView(tv("調べたい家をタップしてください。", 13f, true, Color.parseColor("#FFE28A")))
@@ -3147,11 +3256,27 @@ class MainActivity : Activity() {
 
         pn.addView(cd)
         setScreen(pn)
+        // クリア時はお祝いの紙吹雪を画面全体に重ねる（タップは下の画面に通す）
+        if (w == 1) {
+            val cel = CelebrationView(this)
+            cel.isClickable = false
+            cel.isFocusable = false
+            root.addView(cel, FrameLayout.LayoutParams(-1, -1))
+        }
     }
 
     private fun doSecretSearch(house: Int) {
-        secret.search(house)
-        showSecret()
+        val hit = secret.search(house)
+        if (secret.winner() != 0) {
+            showSecret()          // 決着（勝利/敗北）はそのまま結果画面へ
+            return
+        }
+        if (hit) {
+            showSecret()          // 人狼を捕まえた → 画面で確認してもらう
+        } else {
+            // 空振りなら自動で夜が明ける（朝ボタンを押す手間をなくす）
+            nextSecretDay()
+        }
     }
 
     private fun nextSecretDay() {
